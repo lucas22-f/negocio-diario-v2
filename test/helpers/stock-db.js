@@ -45,14 +45,14 @@ export async function createStockDb() {
 
 function migrationPath() {
   const dir = join(root, 'supabase', 'migrations');
-  const files = readdirSync(dir).filter(f => f.endsWith('_v2_stock.sql'));
-  if (files.length !== 1) throw new Error(`expected one *_v2_stock.sql, found: ${files.join(', ')}`);
-  return join(dir, files[0]);
+  const files = readdirSync(dir).filter(f => /^\d+_.*\.sql$/.test(f)).sort();
+  if (!files.length) throw new Error('expected versioned SQL migrations');
+  return files.map(file => join(dir, file));
 }
 
 export async function applyMigration(db) {
   await db.exec('reset role'); // DDL always runs as the owner, never as a leftover request role
-  await db.exec(readFileSync(migrationPath(), 'utf8'));
+  for (const path of migrationPath()) await db.exec(readFileSync(path, 'utf8'));
 }
 
 // Synthetic auth identity for the in-memory fixture only.
@@ -162,6 +162,10 @@ const RPC_PARAMS = {
   v2_archive_product: ['p_product_id', 'p_prev_stock', 'p_archived'],
 };
 
+RPC_PARAMS.v2_create_sale_at_stand = [...RPC_PARAMS.v2_create_sale, 'p_stand'];
+RPC_PARAMS.v2_edit_sale_at_stand = ['p_sale', 'p_previous'];
+RPC_PARAMS.v2_delete_sale_at_stand = ['p_previous'];
+
 const stripEq = value => (value === null ? null : value.replace(/^eq\./, ''));
 
 export function createRestStockFetch(db, { rowShape } = {}) {
@@ -237,7 +241,7 @@ export function createRestStockFetch(db, { rowShape } = {}) {
         addEq(parsed.searchParams.get('id'), 'id::text');
       }
       const columns = table === 'v2_sales'
-        ? 'id, date::text as date, product, payment, amount_cents, row_seq, product_id, quantity'
+        ? 'id, date::text as date, product, payment, amount_cents, row_seq, product_id, quantity, stand'
         : 'id, name, price_cents, stock, archived';
       try {
         await become(db, 'authenticated');

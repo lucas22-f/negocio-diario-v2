@@ -196,3 +196,18 @@ SESSION_UNAVAILABLE / STORAGE_UNAVAILABLE`.
 - Hosted PostgREST parity (error-body shape for unhandled SQL errors) and
   multi-session concurrency remain pending for the T5 independent verification
   and the T6 cloud apply.
+
+## Sale stand (fixed / mobile)
+
+Sales may carry optional `stand: "fixed" | "mobile" | null` in POST/PUT and
+the previous snapshot in PUT/DELETE. Other values answer
+`400 INVALID_STAND` / `Elegí Puesto fijo o Móvil.` before storage access.
+A non-null stand is returned with the sale; unknown legacy attribution is
+omitted, never guessed. Replay identity and modern edit/delete CAS include it.
+Legacy requests omitting the field still work and never clear stored attribution.
+No new accounts, separate inventory, filters or seller names are introduced.
+
+Apply `supabase/migrations/0002_sale_stand.sql` **before** deploying the new
+server. The migration leaves old RPC signatures available for rolling clients.
+Local fixtures apply versioned migrations in order; cloud application and
+publication are separate, explicitly authorized delivery operations.

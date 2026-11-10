@@ -503,3 +503,55 @@ test('RPC rows shaped as a one-row array are honored too', async t => {
   const list = await get(`/api/sales?date=${DATE}`);
   assert.equal(list.body.sales.find(s => s.id === SALE).id, SALE, 'table GETs shift shape independently of RPC rows');
 });
+
+
+// S1, odd/tasks/sale-stand.md: attribution travels with the row, not the login.
+test('stand: two sessions persist independent stands and mismatched replay changes nothing', async t => {
+  const app = await listen(t, stockOptions(bridge));
+  const a = await app.enter(), b = await app.enter();
+  assert.notEqual(a.cookie, b.cookie);
+  const product = (await a.send('POST', '/api/products', { name: 'Stand shared stock', stock: 10 })).body.product;
+  const fixed = { requestId: 'aaaa0000-0000-4000-8000-000000000001', date: '2026-02-03', product: product.name, payment: 'efectivo', amount: '2000', productId: product.id, quantity: 1, stand: 'fixed' };
+  const mobile = { ...fixed, requestId: 'aaaa0000-0000-4000-8000-000000000002', stand: 'mobile' };
+  for (const [client, draft] of [[a, fixed], [b, mobile]]) {
+    const saved = await client.send('POST', '/api/sales', draft);
+    assert.equal(saved.status, 201); assert.equal(saved.body.sale.stand, draft.stand);
+  }
+  const listed = await b.get('/api/sales?date=2026-02-03');
+  assert.deepEqual(listed.body.sales.filter(s => [fixed.requestId, mobile.requestId].includes(s.id)).map(s => s.stand), ['fixed', 'mobile']);
+  assert.equal((await productRow(product.name)).stock, 8);
+  const before = [await countSales(), await totalMovements(), await productRow(product.name)];
+  assert.equal((await a.send('POST', '/api/sales', fixed)).status, 200);
+  const rejected = await b.send('POST', '/api/sales', { ...fixed, stand: 'mobile' });
+  assert.equal(rejected.status, 409); assert.equal(rejected.body.error.code, 'ID_CONFLICT');
+  assert.deepEqual([await countSales(), await totalMovements(), await productRow(product.name)], before);
+});
+
+test('stand: invalid values fail before storage; legacy missing stand stays unchanged', async t => {
+  const { send } = await (await listen(t, stockOptions(bridge))).enter();
+  const draft = { requestId: 'aaaa0000-0000-4000-8000-000000000003', date: '2026-02-04', product: 'Legacy stand', payment: 'efectivo', amount: '2000' };
+  const before = [await countSales(), await totalMovements()];
+  for (const stand of ['', 'other', 2, {}, true]) {
+    const result = await send('POST', '/api/sales', { ...draft, stand });
+    assert.equal(result.status, 400); assert.equal(result.body.error.code, 'INVALID_STAND');
+  }
+  assert.deepEqual([await countSales(), await totalMovements()], before);
+  const legacy = await send('POST', '/api/sales', draft);
+  assert.equal(legacy.status, 201); assert.deepEqual(legacy.body.sale, currentSalesShape(draft));
+});
+
+test('stand: changing attribution participates in edit/delete CAS without changing stock', async t => {
+  const { send } = await (await listen(t, stockOptions(bridge))).enter();
+  const draft = { requestId: 'aaaa0000-0000-4000-8000-000000000004', date: '2026-02-05', product: 'Stand CAS', payment: 'efectivo', amount: '2000', stand: 'fixed' };
+  assert.equal((await send('POST', '/api/sales', draft)).status, 201);
+  const before = await totalMovements();
+  const edited = await send('PUT', '/api/sales', { ...draft, stand: 'mobile', previous: draft });
+  assert.equal(edited.status, 200); assert.equal(edited.body.sale.stand, 'mobile');
+  for (const [method, body] of [['PUT', { ...draft, amount: '3000', previous: draft }], ['DELETE', { id: draft.requestId, previous: draft }]]) {
+    const stale = await send(method, '/api/sales', body);
+    assert.equal(stale.status, 409); assert.equal(stale.body.error.code, 'SALE_CONFLICT');
+  }
+  assert.equal(await totalMovements(), before);
+  const removed = await send('DELETE', '/api/sales', { id: draft.requestId, previous: { ...draft, stand: 'mobile' } });
+  assert.equal(removed.status, 200); assert.equal(removed.body.sale.stand, 'mobile');
+});

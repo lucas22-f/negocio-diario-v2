@@ -183,3 +183,21 @@ locks) are exercised logically but can NOT be proven to prevent deadlock or
 lost updates without simultaneous connections. That proof needs either the
 Supabase psql run with two sessions or a dedicated multi-connection harness,
 and remains open for the verifier (T5).
+
+## Additive sale stand migration
+
+`0002_sale_stand.sql` adds nullable `v2_sales.stand` with values
+`fixed` / `mobile`; historical rows remain null, with no backfill.
+Apply it after `0001_v2_stock.sql`, before the new server is deployed.
+
+Separate guarded RPC names avoid changing or overloading the legacy signatures:
+- `v2_create_sale_at_stand`: existing create parameters plus `p_stand`.
+- `v2_edit_sale_at_stand(p_sale jsonb, p_previous jsonb)`: normalized API
+  sale objects (`id, date, product, payment, amountCents, productId, quantity, stand`).
+- `v2_delete_sale_at_stand(p_previous jsonb)`: the observed normalized row.
+
+Create replay equality includes stand; edit/delete lock the sale and compare
+the observed stand before delegating existing atomic stock operations.
+Execution stays authenticated-only with the unchanged exact UID+email gate.
+Old callers retain their signatures and cannot silently clear attribution.
+No v1 table, product, stock movement or auth policy is changed.
