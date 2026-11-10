@@ -205,6 +205,8 @@ Free-text sales and products without a price retain manual amounts; a deliberate
 manual adjustment remains editable until quantity changes again. Opening a
 historical sale never reprices it: select a product again to use its current price.
 No saved sales, stock rules or API contracts are changed by this calculation.
+Each ledger row also displays its stored quantity below the product and stand;
+legacy rows without quantity display one. The mobile layout keeps four columns.
 
 ## Sale stand (fixed / mobile)
 

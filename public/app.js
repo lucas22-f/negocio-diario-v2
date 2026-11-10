@@ -235,6 +235,10 @@ function renderSales(sales) {
         label.className = 'sale-stand';
         label.textContent = sale.stand === 'fixed' ? 'Puesto fijo' : sale.stand === 'mobile' ? 'Móvil' : 'Sin puesto';
         cell.appendChild(label);
+        const quantityLabel = document.createElement('small');
+        quantityLabel.className = 'sale-quantity';
+        quantityLabel.textContent = `Cantidad: ${sale.quantity ?? 1}`;
+        cell.appendChild(quantityLabel);
       }
     });
     mountActions(row.insertCell(), sale);

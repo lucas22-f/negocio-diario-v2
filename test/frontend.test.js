@@ -1452,6 +1452,14 @@ test('stand UI: changing stand voids negative-stock consent; explicit retry keep
   assert.deepEqual([...app.storage], [['pochoclos-v2:stand', 'mobile']], 'only the non-secret enum is persisted');
 });
 
+test('sale quantity: every ledger row shows its stored quantity, with one for legacy rows', async () => {
+  const app = screen();
+  await app.reply(app.reads()[0], ledger(sale('Caja', 'a', { quantity: 3, stand: 'fixed' }), sale('Bolsa', 'b', { quantity: 2, stand: 'mobile' }), sale('Anterior', 'c')));
+  assert.deepEqual(app.el('sales').children.map(row => row.cells[0].children[1]?.textContent), ['Cantidad: 3', 'Cantidad: 2', 'Cantidad: 1']);
+  assert.deepEqual(app.el('sales').children.map(row => row.cells[0].children[0]?.textContent), ['Puesto fijo', 'Móvil', 'Sin puesto']);
+  assert.equal(app.el('sales').children[0].cells.length, 4, 'quantity does not add horizontal columns or displace actions');
+});
+
 test('automatic amount: unpriced products and deliberate manual amounts remain editable', async () => {
   for (const price of [null, 1250]) {
     const app = screen(); await app.reply(app.reads()[0], ledger()); app.draft();
