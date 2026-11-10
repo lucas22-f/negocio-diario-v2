@@ -207,6 +207,15 @@ omitted, never guessed. Replay identity and modern edit/delete CAS include it.
 Legacy requests omitting the field still work and never clear stored attribution.
 No new accounts, separate inventory, filters or seller names are introduced.
 
+The sales form requires an explicit **Puesto fijo** or **Móvil** choice on a
+new device. Only that non-secret preference is remembered locally under
+`pochoclos-v2:stand`; blocked storage does not prevent sales. A second device
+keeps its own choice. Each ledger row displays its saved stand, or **Sin puesto**
+for historical rows. Editing uses the row's attribution, not the device's choice;
+canceling or saving an edit restores the original device draft. Historical edits
+may remain unassigned unless a stand is deliberately selected. Shared stock and
+the existing refresh-on-save behavior are unchanged.
+
 Apply `supabase/migrations/0002_sale_stand.sql` **before** deploying the new
 server. The migration leaves old RPC signatures available for rolling clients.
 Local fixtures apply versioned migrations in order; cloud application and

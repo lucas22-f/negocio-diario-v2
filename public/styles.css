@@ -209,3 +209,5 @@ footer { max-width: 76ch; margin-top: 20px; }
   [aria-busy="true"] > .spinner, #save[aria-busy="true"]::before { animation: none; }
   #save-success-icon, #save-success-icon path { animation: none; }
 }
+
+.sale-stand { display: block; margin-top: 4px; color: var(--muted); font-size: var(--text-small); font-weight: 400; }

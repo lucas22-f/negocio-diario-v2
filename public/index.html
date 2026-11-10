@@ -64,6 +64,14 @@
             <p class="hint">Elegilo de la lista para vender más de una unidad.</p>
           </div>
           <fieldset>
+            <legend>Puesto</legend>
+            <div class="payments">
+              <label><input id="stand-fixed" name="stand" type="radio" value="fixed" required> Puesto fijo</label>
+              <label><input id="stand-mobile" name="stand" type="radio" value="mobile"> Móvil</label>
+            </div>
+            <p class="hint">Recordamos tu elección en este dispositivo.</p>
+          </fieldset>
+          <fieldset>
             <legend>Método de pago</legend>
             <div class="payments">
               <label><input id="pay-efectivo" name="payment" type="radio" value="efectivo" required> Efectivo</label>
@@ -97,7 +105,7 @@
         <p id="list-status" role="status" aria-live="polite"></p>
         <table id="ledger-table" aria-busy="true">
           <caption id="day-caption">Listado por fecha · ARS</caption>
-          <thead><tr><th scope="col">Producto</th><th scope="col">Pago</th><th scope="col" class="money">Monto (ARS)</th><th scope="col" class="actions"><span class="visually-hidden">Acciones de venta</span></th></tr></thead>
+          <thead><tr><th scope="col">Producto / Puesto</th><th scope="col">Pago</th><th scope="col" class="money">Monto (ARS)</th><th scope="col" class="actions"><span class="visually-hidden">Acciones de venta</span></th></tr></thead>
           <tbody id="sales"></tbody>
           <tfoot><tr id="daily-total" hidden><th scope="row" colspan="2">Total del día</th><td class="money" id="daily-total-amount"></td><td class="actions"></td></tr></tfoot>
         </table>

@@ -3,6 +3,10 @@ const dateInput = document.getElementById('sale-date');
 const product = document.getElementById('product');
 const listbox = document.getElementById('product-listbox');
 const quantity = document.getElementById('quantity');
+const standFixed = document.getElementById('stand-fixed');
+const standMobile = document.getElementById('stand-mobile');
+const standKey = 'pochoclos-v2:stand';
+const selectedStand = () => standFixed.checked ? 'fixed' : standMobile.checked ? 'mobile' : null;
 const negativeConfirm = document.getElementById('negative-confirm');
 const amount = document.getElementById('amount');
 const listDate = document.getElementById('list-date');
@@ -50,6 +54,18 @@ dateInput.value = listDate.value = localDate;
 let saving = false;
 let deleting = false;
 let editing = null;
+// Store only the device preference, never sessions or business records.
+try {
+  const preferred = globalThis.localStorage?.getItem(standKey);
+  standFixed.checked = preferred === 'fixed';
+  standMobile.checked = preferred === 'mobile';
+} catch { /* Storage may be unavailable; explicit selection still works. */ }
+for (const control of [standFixed, standMobile]) control.addEventListener('change', () => {
+  hideNegative();
+  if (!editing) {
+    try { globalThis.localStorage?.setItem(standKey, selectedStand()); } catch { /* Device preference is optional. */ }
+  }
+});
 let savedDraft = null;
 let requestId = null;
 let cancelConfirm = null;
@@ -214,6 +230,12 @@ function renderSales(sales) {
       const cell = row.insertCell();
       cell.className = name;
       cell.textContent = values[index];
+      if (name === 'product') {
+        const label = document.createElement('small');
+        label.className = 'sale-stand';
+        label.textContent = sale.stand === 'fixed' ? 'Puesto fijo' : sale.stand === 'mobile' ? 'Móvil' : 'Sin puesto';
+        cell.appendChild(label);
+      }
     });
     mountActions(row.insertCell(), sale);
   }
@@ -283,6 +305,7 @@ function saleFields(sale) {
     requestId: sale.id, date: sale.date, product: sale.product, payment: sale.payment,
     amount: moneyText(sale.amountCents),
     productId: sale.productId ?? null, quantity: sale.quantity ?? 1,
+    ...(sale.stand ? { stand: sale.stand } : {}),
   };
 }
 
@@ -301,9 +324,10 @@ function startEdit(sale) {
   // they only move the working link if the user deliberately selects one.
   editing = { ...snapshot, previous: snapshot, link: snapshot.productId };
   for (const input of inputs) {
-    if (input.type === 'radio') input.checked = input.value === editing.payment;
+    if (input.type === 'radio') input.checked = input.value === editing[input.name];
     else input.value = editing[input.name];
   }
+  standFixed.required = snapshot.stand != null;
   applyQuantityEnabled(editing.link);
   if (editing.link !== null) quantity.value = String(editing.quantity);
   entryTitle.textContent = 'Modificar venta';
@@ -315,6 +339,7 @@ function startEdit(sale) {
 
 function finishEdit() {
   editing = null;
+  standFixed.required = true;
   for (const field of savedDraft || []) {
     field.input.value = field.value;
     field.input.checked = field.checked;
@@ -346,7 +371,7 @@ negativeConfirm.addEventListener('click', () => {
   const retained = pendingNegative;
   hideNegative();
   const now = buildSalePayload();
-  const sameDraft = ['requestId', 'date', 'product', 'payment', 'amount', 'productId', 'quantity']
+  const sameDraft = ['requestId', 'date', 'product', 'payment', 'amount', 'productId', 'quantity', 'stand']
     .every(key => String(now[key]) === String(retained[key]));
   if (sameDraft) submitSale(retained, true); // any later edit voids it instead
 });
@@ -914,6 +939,7 @@ function buildSalePayload() {
     date: fields.get('date'), product: fields.get('product'), payment: fields.get('payment'),
     amount: fields.get('amount'), productId,
     quantity: productId ? parseQuantity(fields.get('quantity')) : 1,
+    ...(selectedStand() ? { stand: selectedStand() } : {}),
   };
 }
 
@@ -990,7 +1016,13 @@ async function submitSale(payload, allowedNegative) {
 
 form.addEventListener('submit', event => {
   event.preventDefault();
-  if (saving || deleting || !form.reportValidity()) return;
+  if (saving || deleting) return;
+  if (!editing && selectedStand() === null) {
+    message(saveStatus, 'Elegí Puesto fijo o Móvil.', true);
+    standFixed.focus();
+    return;
+  }
+  if (!form.reportValidity()) return;
   if (cancelConfirm) cancelConfirm(); // Starting a save cancels a row's pending confirm.
   if (!editing && !globalThis.crypto?.randomUUID) {
     message(saveStatus, 'Abrí la app con HTTPS o localhost para guardar de forma segura.', true);

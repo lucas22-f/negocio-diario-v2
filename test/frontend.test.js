@@ -19,7 +19,7 @@ const ledger = (...sales) => ({ storage: 'blob', sales });
 
 // Only the DOM operations used by this screen: fields/events, status attributes
 // and table cells. No app internals, actual server, browser storage or network.
-function screen() {
+function screen({ storage = new Map([['pochoclos-v2:stand', 'fixed']]) } = {}) {
   let now = 0;
   let nextTimer = 0;
   let activeReads = 0;
@@ -99,6 +99,7 @@ function screen() {
   elements.set('products', productRows);
   const context = {
     document, window, AbortController, encodeURIComponent, console,
+    localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, String(value)) },
     Date: class extends Date {
       constructor(...args) { super(...(args.length ? args : [Date.UTC(2026, 10, 3, 12) + now])); }
       static now() { return now; }
@@ -137,7 +138,7 @@ function screen() {
   };
   vm.runInNewContext(source, context, { filename: 'public/app.js' });
   return {
-    el: id => elements.get(id) || null, document, window, requests, formInputs,
+    el: id => elements.get(id) || null, document, window, requests, formInputs, storage,
     reads: () => requests.filter(request => request.method === 'GET'),
     salesReads: () => requests.filter(request => request.method === 'GET' && /^\/api\/sales\?/.test(request.url)),
     productGets: () => requests.filter(request => request.url === '/api/products' && request.method === 'GET'),
@@ -332,7 +333,7 @@ test('a failed save triggers no GET, ever; the list waits for the next confirmed
   const payload = {
     requestId: '00000000-0000-4000-8000-000000000001', date: '2026-11-02',
     product: 'Borrador sin guardar', payment: 'transferencia', amount: '1500,10',
-    productId: null, quantity: 1,
+    productId: null, quantity: 1, stand: 'fixed',
   };
   app.el('sale-form').emit('submit'); await flush();
   app.posts()[0].reject(new Error('Respuesta perdida')); await flush();
@@ -424,7 +425,7 @@ test('an uncertain POST keeps draft and requestId; a failed POST never reads; re
   const payload = JSON.parse(app.posts()[0].options.body);
   assert.deepEqual(payload, {
     requestId: payload.requestId, date: '2026-11-02', product: 'Borrador sin guardar', payment: 'transferencia', amount: '1500,10',
-    productId: null, quantity: 1,
+    productId: null, quantity: 1, stand: 'fixed',
   });
   app.posts()[0].reject(new Error('Respuesta perdida')); await flush();
   assert.equal(app.el('save').getAttribute('aria-busy'), 'false');
@@ -831,7 +832,10 @@ test('login markup matches the screen: panel language, labels, autocomplete, liv
   assert.match(html, /id="login-status" role="status" aria-live="polite" aria-atomic="true"/);
   assert.match(html, /<div class="workspace" id="workspace"[^>]*>/);
   assert.match(html, /<button id="logout" type="button" hidden>Cerrar sesión<\/button>/);
-  assert.doesNotMatch(source, /localStorage|sessionStorage|document\.cookie/);
+  assert.doesNotMatch(source, /sessionStorage|document\.cookie/);
+  assert.equal((source.match(/localStorage/g) || []).length, 2, 'only the stand preference can use browser storage');
+  assert.match(source, /getItem\(standKey\)/);
+  assert.match(source, /setItem\(standKey, selectedStand\(\)\)/);
   assert.doesNotMatch(html, /\bimport\b|[Cc][Ss][Vv]/, 'no import surface appears anywhere');
   // v2 identity T1: the pre-filled business identity is the pochoclos one.
   assert.match(html, /id="login-email"[^>]*value="pochoclos\@negocio\.com"/);
@@ -1119,7 +1123,7 @@ test('typing over a selected product clears the link, so a free-text sale always
   const payload = JSON.parse(app.salePosts()[0].options.body);
   assert.deepEqual(payload, {
     requestId: payload.requestId, date: '2026-11-02', product: 'Borrador sin guardar', payment: 'transferencia',
-    amount: '1500,10', productId: null, quantity: 1,
+    amount: '1500,10', productId: null, quantity: 1, stand: 'fixed',
   }, 'a free-text sale relinked nothing despite a matching product name');
 });
 
@@ -1349,4 +1353,97 @@ test('the anonymous gate hides every awaited call: no Actualizando over the logi
   syncing(app, true, 'the post-login read is awaited on the returned panels');
   await app.reply(app.salesReads()[1], ledger(sale('Real')));
   syncing(app, false);
+});
+
+test('stand UI: a fresh device chooses explicitly, remembers only its own choice and freezes it in flight', async () => {
+  assert.match(html, /name="stand"/);
+  const app = screen({ storage: new Map() });
+  await app.reply(app.reads()[0], ledger());
+  app.draft();
+  app.el('sale-form').emit('submit'); await flush();
+  assert.equal(app.posts().length, 0);
+  assert.equal(app.el('save-status').textContent, 'Elegí Puesto fijo o Móvil.');
+  app.el('stand-mobile').checked = true;
+  app.el('stand-mobile').emit('change');
+  app.el('sale-form').emit('submit'); await flush();
+  assert.equal(JSON.parse(app.posts()[0].options.body).stand, 'mobile');
+  assert.equal(app.el('stand-mobile').disabled, true);
+  assert.equal(app.storage.get('pochoclos-v2:stand'), 'mobile');
+  await app.reply(app.posts()[0], { error: { message: 'Sin conexión' } }, 503);
+  assert.equal(app.el('stand-mobile').checked, true);
+  assert.equal(app.el('stand-mobile').disabled, false);
+  const reloaded = screen({ storage: app.storage });
+  assert.equal(reloaded.el('stand-mobile').checked, true);
+});
+
+test('stand UI: every row shows its stored stand regardless of the device preference', async () => {
+  const a = screen(), b = screen({ storage: new Map([['pochoclos-v2:stand', 'mobile']]) });
+  const data = ledger(sale('Fijo', 'a', { stand: 'fixed' }), sale('Móvil', 'b', { stand: 'mobile' }), sale('Anterior', 'c'));
+  for (const app of [a, b]) {
+    await app.reply(app.reads()[0], data);
+    assert.deepEqual(app.el('sales').children.map(row => row.cells[0].children[0]?.textContent), ['Puesto fijo', 'Móvil', 'Sin puesto']);
+  }
+  assert.equal(a.el('stand-fixed').checked, true);
+  assert.equal(b.el('stand-mobile').checked, true);
+  b.el('stand-fixed').checked = true; b.el('stand-mobile').checked = false;
+  b.el('stand-fixed').emit('change');
+  assert.equal(a.storage.get('pochoclos-v2:stand'), 'fixed');
+});
+
+test('stand UI: edit/cancel preserves device preference and sends observed stand in CAS', async () => {
+  const app = screen();
+  const original = sale('Venta móvil', '00000000-0000-4000-8000-000000000005', { date: '2026-11-02', stand: 'mobile' });
+  await app.reply(app.reads()[0], ledger(original));
+  app.el('sales').children[0].cells[3].children.find(button => button.getAttribute('title') === 'Modificar venta').emit('click');
+  assert.equal(app.el('stand-mobile').checked, true);
+  app.el('cancel-edit').emit('click');
+  assert.equal(app.el('stand-fixed').checked, true);
+  app.el('sales').children[0].cells[3].children.find(button => button.getAttribute('title') === 'Modificar venta').emit('click');
+  app.el('stand-fixed').checked = true; app.el('stand-mobile').checked = false;
+  app.el('stand-fixed').emit('change');
+  app.el('sale-form').emit('submit'); await flush();
+  const payload = JSON.parse(app.puts()[0].options.body);
+  assert.equal(payload.stand, 'fixed'); assert.equal(payload.previous.stand, 'mobile');
+  assert.equal(app.storage.get('pochoclos-v2:stand'), 'fixed');
+});
+
+test('stand UI: invalid or blocked preference storage never prevents an explicit sale', async () => {
+  for (const storage of [new Map([['pochoclos-v2:stand', 'invalid']]), {
+    get() { throw new Error('Storage blocked'); }, set() { throw new Error('Storage blocked'); },
+  }]) {
+    const app = screen({ storage });
+    await app.reply(app.reads()[0], ledger());
+    assert.equal(app.el('stand-fixed').checked, false);
+    assert.equal(app.el('stand-mobile').checked, false);
+    app.el('stand-fixed').checked = true; app.el('stand-fixed').emit('change');
+    app.draft(); app.el('sale-form').emit('submit'); await flush();
+    assert.equal(JSON.parse(app.posts()[0].options.body).stand, 'fixed');
+    await app.reply(app.posts()[0], { sale: sale('Guardada', '1', { stand: 'fixed' }) });
+    assert.equal(app.el('stand-fixed').checked, true, 'a confirmed save retains the explicit choice');
+    assert.equal(app.el('product').value, '');
+    assert.equal(app.el('save-status').textContent, 'Venta guardada.');
+  }
+});
+
+test('stand UI: changing stand voids negative-stock consent; explicit retry keeps stand and request identity', async () => {
+  const app = screen();
+  await app.reply(app.reads()[0], ledger()); app.draft();
+  app.el('sale-form').emit('submit'); await flush();
+  const initial = JSON.parse(app.posts()[0].options.body);
+  const refusal = { error: { code: 'INSUFFICIENT_STOCK', message: 'Stock insuficiente.' } };
+  await app.reply(app.posts()[0], refusal, 409);
+  assert.equal(app.el('negative-confirm').hidden, false);
+  app.el('stand-fixed').checked = false; app.el('stand-mobile').checked = true;
+  app.el('stand-mobile').emit('change');
+  assert.equal(app.el('negative-confirm').hidden, true);
+  app.el('negative-confirm').emit('click'); await flush();
+  assert.equal(app.posts().length, 1, 'stale consent sends nothing');
+  app.el('sale-form').emit('submit'); await flush();
+  assert.equal(JSON.parse(app.posts()[1].options.body).stand, 'mobile');
+  await app.reply(app.posts()[1], refusal, 409);
+  app.el('negative-confirm').emit('click'); await flush();
+  const retry = JSON.parse(app.posts()[2].options.body);
+  assert.equal(retry.requestId, initial.requestId);
+  assert.equal(retry.stand, 'mobile'); assert.equal(retry.allowNegative, true);
+  assert.deepEqual([...app.storage], [['pochoclos-v2:stand', 'mobile']], 'only the non-secret enum is persisted');
 });
