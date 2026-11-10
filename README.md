@@ -1,4 +1,4 @@
-# Negocio Diario v2 (pochoclos-1)
+# Negocio Diario v2
 
 Independent v2 app for the pochoclos-1 business identity. It shares nothing
 with the v1 deployment: no storage, no cookies, no identity, and no v1 tables
