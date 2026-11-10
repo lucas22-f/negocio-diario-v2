@@ -474,8 +474,10 @@ function setHighlightedOption(index) {
 // Selecting an existing active product sets the product id, parks quantity at
 // its default of 1 and prefills the amount with quantity × optional price.
 function chooseProduct(item) {
-  if (editing) editing.link = item.id;
-  else selectedProduct = item;
+  if (editing) {
+    editing.link = item.id;
+    editing.unitPriceCents = item.priceCents;
+  } else selectedProduct = item;
   product.value = item.name;
   applyQuantityEnabled(item.id);
   quantity.value = '1';
@@ -488,9 +490,21 @@ function chooseProduct(item) {
 
 function clearSelection() {
   selectedProduct = null;
-  if (editing) editing.link = null;
+  if (editing) {
+    editing.link = null;
+    delete editing.unitPriceCents;
+  }
   applyQuantityEnabled(null);
 }
+
+quantity.addEventListener('input', () => {
+  // Only an explicit product selection supplies a price; never reprice history.
+  const priceCents = editing ? editing.unitPriceCents : selectedProduct?.priceCents;
+  if (priceCents !== null && priceCents !== undefined) {
+    amount.value = moneyText(priceCents * parseQuantity(quantity.value));
+  }
+  hideNegative();
+});
 
 product.addEventListener('input', () => {
   // Typing inside the name unlinks the product: free text stays safe at qty 1

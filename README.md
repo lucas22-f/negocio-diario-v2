@@ -197,6 +197,15 @@ SESSION_UNAVAILABLE / STORAGE_UNAVAILABLE`.
   multi-session concurrency remain pending for the T5 independent verification
   and the T6 cloud apply.
 
+## Automatic sale amount
+
+Selecting a priced product sets the amount to its unit price. Changing quantity
+recalculates the total immediately as quantity × price, using integer cents.
+Free-text sales and products without a price retain manual amounts; a deliberate
+manual adjustment remains editable until quantity changes again. Opening a
+historical sale never reprices it: select a product again to use its current price.
+No saved sales, stock rules or API contracts are changed by this calculation.
+
 ## Sale stand (fixed / mobile)
 
 Sales may carry optional `stand: "fixed" | "mobile" | null` in POST/PUT and

@@ -1095,11 +1095,13 @@ test('product suggestions come from the stock list: choosing an existing active 
   assert.equal(app.el('save-feedback').dataset.success, 'false');
 
   app.el('quantity').value = '3';
+  app.el('quantity').emit('input');
+  assert.equal(app.el('amount').value, '37,50', 'quantity updates the amount immediately using integer-cent price');
   app.el('sale-form').emit('submit'); await flush();
   const payload = JSON.parse(app.salePosts()[0].options.body);
   assert.equal(payload.productId, '11111111-1111-4111-8111-000000000001');
   assert.equal(payload.quantity, 3);
-  assert.equal(payload.amount, '12,50', 'the amount stays editable and is not recomputed');
+  assert.equal(payload.amount, '37,50', 'the submitted total is quantity multiplied by the selected product price');
   assert.equal(payload.allowNegative, undefined, 'a normal sale never claims the negative allowance');
   await app.reply(app.salePosts()[0], { storage: 'supabase', sale: { date: '2026-11-02' }, replayed: false }, 201);
   await flush();
@@ -1138,6 +1140,8 @@ test('editing a linked sale keeps the historical snapshot: the previous row keep
   assert.equal(app.el('quantity').disabled, false);
   assert.equal(app.el('quantity').value, '3', 'the historical quantity comes back editable');
   app.el('quantity').value = '2';
+  app.el('quantity').emit('input');
+  assert.equal(app.el('amount').value, '50,00', 'editing history does not invent a current unit price');
   app.el('sale-form').emit('submit'); await flush();
   const put = app.puts()[0];
   assert.deepEqual(JSON.parse(put.options.body), {
@@ -1446,4 +1450,34 @@ test('stand UI: changing stand voids negative-stock consent; explicit retry keep
   assert.equal(retry.requestId, initial.requestId);
   assert.equal(retry.stand, 'mobile'); assert.equal(retry.allowNegative, true);
   assert.deepEqual([...app.storage], [['pochoclos-v2:stand', 'mobile']], 'only the non-secret enum is persisted');
+});
+
+test('automatic amount: unpriced products and deliberate manual amounts remain editable', async () => {
+  for (const price of [null, 1250]) {
+    const app = screen(); await app.reply(app.reads()[0], ledger()); app.draft();
+    app.el('product').value = 'Bol'; app.el('product').emit('input'); await flush();
+    await app.reply(app.productGets()[0], catalogue(product('Bolsa', price, 10)));
+    app.el('product-listbox').children[0].emit('click');
+    app.el('amount').value = '42,00';
+    app.el('quantity').value = '2'; app.el('quantity').emit('input');
+    assert.equal(app.el('amount').value, price === null ? '42,00' : '25,00');
+    app.el('amount').value = '30,00'; app.el('amount').emit('input');
+    app.el('sale-form').emit('submit'); await flush();
+    assert.equal(JSON.parse(app.posts()[0].options.body).amount, '30,00', 'a deliberate manual adjustment is not overwritten on submit');
+  }
+});
+
+test('automatic amount: deliberately reselecting a product in an edit uses its price without changing the previous snapshot', async () => {
+  const original = sale('Bolsa', '9', { amountCents: 5000, quantity: 3 });
+  const app = screen(); await app.reply(app.reads()[0], ledger(original)); editFirst(app);
+  assert.equal(app.el('amount').value, '50,00');
+  app.el('product').value = 'Bol'; app.el('product').emit('input'); await flush();
+  await app.reply(app.productGets()[0], catalogue(product('Bolsa', 1250, 10)));
+  app.el('product-listbox').children[0].emit('click');
+  app.el('quantity').value = '3'; app.el('quantity').emit('input');
+  assert.equal(app.el('amount').value, '37,50');
+  app.el('sale-form').emit('submit'); await flush();
+  const payload = JSON.parse(app.puts()[0].options.body);
+  assert.equal(payload.amount, '37,50'); assert.equal(payload.quantity, 3);
+  assert.equal(payload.previous.amount, '50,00'); assert.equal(payload.previous.quantity, 3);
 });
