@@ -1,0 +1,22 @@
+{
+  "name": "negocio-diario-v2",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "dev": "node server.js",
+    "test": "node --test",
+    "check": "node --check server.js && node --check api/sales.js && node --check api/products.js && node --check api/session.js && node --check public/app.js && node --check lib/sales.js && node --check lib/session.js && node --check lib/supabase.js && node --check lib/products.js && node --check test/business.test.js && node --check test/session.test.js && node --check test/frontend.test.js && node --check test/stock-schema.test.js && node --check test/stock-functional.test.js && node --check test/stock-api.test.js && node --check test/helpers/stock-db.js"
+  },
+  "dependencies": {
+    "@vercel/blob": "^2.6.1",
+    "csv-parse": "^6.1.0",
+    "csv-stringify": "^6.6.0"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.8"
+  }
+}

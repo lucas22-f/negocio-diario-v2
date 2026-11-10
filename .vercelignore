@@ -1,0 +1,26 @@
+# T5/S11 packaging safety: exclude private, local and non-runtime artifacts.
+# Runtime (api/, lib/, public/, package.json, package-lock.json, vercel.json,
+# server.js) must never be listed here.
+
+# Private business data, credentials and runtime secrets.
+.local/
+.env*
+.playwright-cli/
+
+# Tool/agent state and caches present in the working tree.
+.atl/
+.codegraph/
+.impeccable/
+.taste-skill/
+
+# Non-runtime project directories (migrations applied; docs/tests/tooling).
+design/
+odd/
+scripts/
+supabase/
+test/
+
+# Vercel CLI defaults, pinned explicitly.
+.git/
+node_modules/
+.vercel/

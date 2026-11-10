@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="es-AR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Pochoclos-1</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <main>
+    <header class="app-header">
+      <svg class="ledger-mark" width="36" height="36" viewBox="0 0 36 36" fill="none" aria-hidden="true" focusable="false">
+        <path d="M18 9c-4-3-8-3-13-2v22c5-1 9-1 13 2 4-3 8-3 13-2V7c-5-1-9-1-13 2Z" />
+        <path d="M18 9v22M9 13h5M9 18h5M22 13h5M22 18h5" />
+      </svg>
+      <div>
+        <h1>pochoclos-1</h1>
+        <p class="muted">Anotá una venta y seguí con tu día.</p>
+      </div>
+      <p id="sync-status" class="sync-status" role="status" aria-live="polite" aria-busy="false" hidden><span class="spinner" aria-hidden="true"></span></p>
+      <button id="menu-button" type="button" class="menu-button" aria-haspopup="true" aria-expanded="false" aria-controls="app-menu" hidden>
+        <span class="visually-hidden">Menú</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h16M4 12h16M4 17h16"></path></svg>
+      </button>
+      <nav id="app-menu" class="app-menu" aria-label="Secciones" hidden>
+        <button id="menu-sales" type="button">Ventas</button>
+        <button id="menu-stock" type="button">Stock</button>
+      </nav>
+    </header>
+    <section id="login-section" class="entry login" aria-labelledby="login-title" hidden>
+      <h2 id="login-title">Iniciar sesión</h2>
+      <form id="login-form">
+        <div>
+          <label for="login-email">Correo del negocio</label>
+          <input id="login-email" type="email" value="pochoclos@negocio.com" autocomplete="username" required>
+        </div>
+        <div>
+          <label for="login-password">Contraseña</label>
+          <input id="login-password" type="password" autocomplete="current-password" required>
+        </div>
+        <button id="login-button" type="submit" aria-busy="false">Entrar</button>
+        <p id="login-status" role="status" aria-live="polite" aria-atomic="true"></p>
+      </form>
+    </section>
+    <div class="workspace" id="workspace" tabindex="-1">
+      <section class="entry" aria-labelledby="entry-title">
+        <h2 id="entry-title">Agregar venta</h2>
+        <form id="sale-form">
+          <div>
+            <label for="sale-date">Fecha</label>
+            <input id="sale-date" name="date" type="date" min="0001-01-01" max="9999-12-31" required>
+          </div>
+          <div class="product-entry">
+            <label for="product">Producto</label>
+            <input id="product" name="product" type="text" maxlength="160" placeholder="¿Qué vendiste?" role="combobox"
+              aria-expanded="false" aria-controls="product-listbox" autocomplete="off" required>
+            <ul id="product-listbox" class="product-listbox" role="listbox" aria-label="Productos del stock" hidden></ul>
+          </div>
+          <div>
+            <label for="quantity">Cantidad</label>
+            <input id="quantity" name="quantity" type="number" min="1" max="1000000" step="1" value="1" disabled>
+            <p class="hint">Elegilo de la lista para vender más de una unidad.</p>
+          </div>
+          <fieldset>
+            <legend>Método de pago</legend>
+            <div class="payments">
+              <label><input id="pay-efectivo" name="payment" type="radio" value="efectivo" required> Efectivo</label>
+              <label><input id="pay-transferencia" name="payment" type="radio" value="transferencia"> Transferencia</label>
+            </div>
+          </fieldset>
+          <div class="amount-entry">
+            <label for="amount">Monto (ARS)</label>
+            <input id="amount" name="amount" type="text" inputmode="decimal" maxlength="12"
+              pattern="[0-9]{1,9}([,.][0-9]{1,2})?" placeholder="Ej.: 1500,00" aria-describedby="amount-help" required>
+            <p id="amount-help" class="hint">Pesos argentinos, sin puntos de miles.</p>
+          </div>
+          <button id="save" type="submit" aria-busy="false" disabled>Guardar venta</button>
+          <button id="negative-confirm" type="button" class="negative-confirm" hidden>Vender igual y permitir stock negativo</button>
+          <button id="cancel-edit" type="button" hidden>Cancelar</button>
+          <div id="save-feedback" data-success="false">
+            <span id="save-success-icon" aria-hidden="true" hidden>
+              <svg viewBox="0 0 32 32" fill="none" focusable="false"><circle cx="16" cy="16" r="14"></circle><path d="m9 16 5 5 9-10"></path></svg>
+            </span>
+            <p id="save-status" role="status" aria-live="polite" aria-atomic="true"></p>
+          </div>
+        </form>
+      </section>
+      <section class="ledger" aria-labelledby="ledger-title">
+        <h2 id="ledger-title">Ventas del día</h2>
+        <div class="toolbar">
+          <div class="day-picker"><label for="list-date">Ver fecha</label><input id="list-date" type="date" min="0001-01-01" max="9999-12-31" required></div>
+          <button id="logout" type="button" hidden>Cerrar sesión</button>
+        </div>
+        <p id="storage-status" class="hint" role="status"></p>
+        <p id="list-status" role="status" aria-live="polite"></p>
+        <table id="ledger-table" aria-busy="true">
+          <caption id="day-caption">Listado por fecha · ARS</caption>
+          <thead><tr><th scope="col">Producto</th><th scope="col">Pago</th><th scope="col" class="money">Monto (ARS)</th><th scope="col" class="actions"><span class="visually-hidden">Acciones de venta</span></th></tr></thead>
+          <tbody id="sales"></tbody>
+          <tfoot><tr id="daily-total" hidden><th scope="row" colspan="2">Total del día</th><td class="money" id="daily-total-amount"></td><td class="actions"></td></tr></tfoot>
+        </table>
+      </section>
+    </div>
+    <section id="stock-panel" class="entry stock" aria-labelledby="stock-title" hidden tabindex="-1">
+      <h2 id="stock-title">Stock</h2>
+      <form id="stock-form">
+        <div>
+          <label for="stock-name">Producto</label>
+          <input id="stock-name" name="name" type="text" maxlength="160" placeholder="Ej.: Bolsa" required>
+        </div>
+        <div>
+          <label for="stock-price">Precio de venta (opcional, ARS)</label>
+          <input id="stock-price" name="price" type="text" inputmode="decimal" maxlength="12"
+            pattern="[0-9]{1,9}([,.][0-9]{1,2})?" placeholder="Ej.: 12,50">
+          <p class="hint">Se usa para precargar el monto al vender este producto.</p>
+        </div>
+        <div>
+          <label for="stock-stock">Unidades</label>
+          <input id="stock-stock" name="stock" type="number" step="1" value="0" required inputmode="numeric">
+          <p class="hint">Puede quedar en negativo solo si lo confirmás.</p>
+        </div>
+        <button id="stock-button" type="submit" aria-busy="false">Guardar producto</button>
+        <button id="stock-negative-confirm" type="button" class="negative-confirm" hidden>Guardar igual y permitir stock negativo</button>
+        <button id="stock-cancel" type="button" hidden>Cancelar</button>
+        <p id="stock-status" role="status" aria-live="polite"></p>
+      </form>
+      <table id="stock-table" aria-busy="true">
+        <caption>Todos los productos · ARS</caption>
+        <thead><tr><th scope="col">Producto</th><th scope="col">Precio (ARS)</th><th scope="col">Unidades</th><th scope="col" class="actions"><span class="visually-hidden">Acciones de producto</span></th></tr></thead>
+        <tbody id="products"></tbody>
+      </table>
+    </section>
+    <footer>La lista se actualiza cada vez que guardás una venta; esa lectura trae también lo guardado desde otro dispositivo. No es sincronización automática.</footer>
+    <noscript><p>Activá JavaScript para cargar y guardar ventas. No se guardó ningún dato.</p></noscript>
+  </main>
+</body>
+</html>
