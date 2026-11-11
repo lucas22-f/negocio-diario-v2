@@ -131,6 +131,99 @@ with `allowNegative:true`) / PRODUCT_ARCHIVED`, `405 METHOD_NOT_ALLOWED`,
 `415 CONTENT_TYPE`, `413 BODY_TOO_LARGE`, `503 SESSION_CONFIG /
 SESSION_UNAVAILABLE / STORAGE_UNAVAILABLE`.
 
+## HTTP daily stock contract (T2, exact — T3 consumes this verbatim)
+
+`/api/stock-days` reuses the exact session flow (`v2_session` cookie), the
+Origin guard for mutations, and the validation-before-auth precedence: every
+malformed body answers `400` before the session gate is consulted and never
+reaches storage. Both methods require Supabase configuration and fail closed
+with `503 SESSION_CONFIG` without it; transport failures answer honest `503
+STORAGE_UNAVAILABLE` and nothing is ever retried automatically.
+
+The daily channel NEVER consults the global product stock — neither to
+validate nor to display. Every read returns BOTH stands in one call (one row
+per product/stand, ordered by product name then stand); T3 filters by stand
+client-side. Historical loads are never synthesized, legacy (untagged) sales
+never appear in the daily figures, and an unconfigured day is an explicit
+zero, never a fabricated load.
+
+```jsonc
+// GET /api/stock-days?date=YYYY-MM-DD -> 200
+{"date":"2026-02-01","currency":"ARS","storage":"supabase","rows":[
+  {"productId":"<uuid>","product":"Bolsa","priceCents":null,"stand":"fixed",
+   "initialLoad":5,"loaded":5,"sold":2,"available":3},
+  {"productId":"<uuid>","product":"Bolsa","priceCents":null,"stand":"mobile",
+   "initialLoad":0,"loaded":0,"sold":0,"available":0}]}
+// loaded = initialLoad + replenished; sold derives from that date/stand's
+// tagged sales; available = loaded - sold (it may go negative after an
+// explicit allowNegative oversell). priceCents mirrors the product's
+// optional price (null when unset) and is display data only.
+```
+
+```jsonc
+// POST /api/stock-days -> 200 {"storage":"supabase","action":"<action>","applied":N}
+// `applied` is the number of items applied (load/replenish) or rows copied
+// (copy; 0 = the previous day had no load). PUT answers 405.
+{"action":"load","date":"2026-02-01","stand":"fixed",
+ "items":[{"productId":"<uuid>","initial":5,"prevInitial":null}],"allowNegative":false}
+//   load defines the day's INITIAL load (S1). prevInitial is the observed
+//   current initial load per item (null = no load yet): any mismatch loses
+//   a per-item CAS and answers 409 LOAD_CONFLICT with the day untouched.
+{"action":"replenish","date":"2026-02-01","stand":"fixed",
+ "items":[{"productId":"<uuid>","replenished":2,"prevReplenished":null}],"allowNegative":false}
+//   replenish sets the NEW cumulative added total of the day (never a
+//   delta); the initial load is never rewritten. Same per-item CAS.
+{"action":"copy","date":"2026-02-02","stand":"fixed"}
+//   copy (S3) loads the PREVIOUS CALENDAR DAY's initial quantities for the
+//   SAME stand: quantities prepared, never sold balances, and never an
+//   automatic carryover. It carries no items.
+```
+
+Rules: `stand` is `"fixed" | "mobile"`; item quantities are integers 0..1000000
+and real JSON numbers (never numeric strings); each list has no repeated
+products; `allowNegative` is an explicit JSON boolean (default false) and is
+required to confirm a load/replenish that would push the visible available
+below zero. Copying onto a day that already has its own load is refused
+atomically with `409 DAY_ALREADY_LOADED` — nothing is ever overwritten, and a
+previous day without load is a successful no-op (`applied: 0`). Quantities are
+validated 0..1000000 before storage; archived products are refused with `409
+PRODUCT_ARCHIVED`.
+
+**Daily sales opt-in.** A sale POSTed to `/api/sales` with `dailyStock: true`
+(real boolean, requires `stand`) routes into the per-day/per-stand channel: it
+consumes that day/stand's availability (never the global stock, never a
+movement row), is stored tagged (`dailyStock: true` echoed on the row), and
+reports shortages against the DAILY availability. The flag is additive: sales
+without it keep the exact legacy global-stock contract, and historical legacy
+sales remain editable/deletable through the legacy paths (`requestId` +
+`amount` decimal string). Edits/deletes of a daily row may use either the
+canonical stored shape (`id` + integer `amountCents`, the exact row GET
+returned) or the existing frontend legacy shape (`requestId` + `amount`) — the
+stored channel always decides the RPC, never a caller-provided flag. Snapshots
+that omit the `dailyStock` tag adopt the stored channel, so editing the current
+daily row never false-conflicts; an explicitly contradictory tag never
+converts the channel and fails like any other stale field (409). The observed
+`stand` in `previous` is compare-and-swapped too and is never inferred.
+
+Stable daily error codes (same envelope `{error:{code,message}}`): `400
+INVALID_DATE / INVALID_STAND / INVALID_ITEMS / INVALID_ACTION /
+INVALID_ALLOW_NEGATIVE / INVALID_PRODUCT_ID / INVALID_JSON / INVALID_DAILY /
+INVALID_STOCK`, `401 UNAUTHENTICATED`, `403 FORBIDDEN_ORIGIN / FORBIDDEN`,
+`409 LOAD_CONFLICT` (per-item CAS loss, day untouched) / `DAY_ALREADY_LOADED`
+(conflicting copy) / `INSUFFICIENT_STOCK` (message carries the daily
+`stock=`/`solicitado=` numbers; retry the SAME list with `allowNegative:true`)
+/ `PRODUCT_ARCHIVED`, `405 METHOD_NOT_ALLOWED`, `415 CONTENT_TYPE`, `413
+BODY_TOO_LARGE`, `503 SESSION_CONFIG / SESSION_UNAVAILABLE /
+STORAGE_UNAVAILABLE`.
+
+**Deployment ordering (no migration is executed here).** Apply
+`supabase/migrations/0003_daily_stock.sql` in the Supabase project BEFORE
+deploying the new server code: older servers never call the daily RPCs, but a
+new server without the migration fails closed (503) on `/api/stock-days` and
+daily sale opt-ins. Migrations are applied in version order (0001 → 0002 →
+0003) and are additive: no historical v1 or v2 rows are reset, backfilled or
+destructively changed.
+
 ## UI contract (T4 — `public/`)
 
 - **Identification.** The business heading is `pochoclos-1`. There is no

@@ -4,7 +4,8 @@
   "outputDirectory": "public",
   "functions": {
     "api/sales.js": { "maxDuration": 15 },
-    "api/products.js": { "maxDuration": 15 }
+    "api/products.js": { "maxDuration": 15 },
+    "api/stock-days.js": { "maxDuration": 15 }
   },
   "headers": [
     {

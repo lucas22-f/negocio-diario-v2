@@ -175,6 +175,8 @@ RPC_PARAMS.v2_create_daily_sale = [...RPC_PARAMS.v2_create_sale, 'p_stand'];
 RPC_PARAMS.v2_edit_daily_sale = ['p_sale', 'p_previous'];
 RPC_PARAMS.v2_delete_daily_sale = ['p_previous'];
 
+const SET_RETURNING_RPCS = new Set(['v2_read_daily_stock', 'v2_copy_daily_stock']);
+
 const stripEq = value => (value === null ? null : value.replace(/^eq\./, ''));
 
 export function createRestStockFetch(db, { rowShape } = {}) {
@@ -216,13 +218,30 @@ export function createRestStockFetch(db, { rowShape } = {}) {
       // can mask a client bug.
       const missing = params.filter(name => !(name in body));
       if (missing.length) return respond(400, { code: 'PGRST206', message: `missing parameter(s): ${missing.join(', ')}` });
-      const values = params.map(name => body[name]);
+      // Known jsonb parameters are serialized exactly once, HERE at the SQL
+      // binding boundary, so the fixture preserves the JSON type the wire
+      // carried (hosted PostgREST parity): an object/array binds as its JSON
+      // text, while a pre-stringified JSON TEXT argument binds as a jsonb
+      // STRING scalar — which the SQL then rejects as the wrong type instead
+      // of silently decoding it back into an array/object.
+      const JSONB_PARAMS = new Set(['p_items', 'p_sale', 'p_previous']);
+      const values = params.map(name => JSONB_PARAMS.has(name) ? JSON.stringify(body[name]) : body[name]);
       const placeholders = params.map((_, i) => `$${i + 1}`).join(',');
       try {
         await become(db, 'authenticated');
         const { rows } = await db.query(`select * from public."${fn}"(${placeholders})`, values);
+        // Set-returning daily RPCs (the T1 read/copy contracts) answer with a
+        // row ARRAY like a hosted PostgREST setof, empty sets included.
+        if (SET_RETURNING_RPCS.has(fn)) return respond(200, rows.map(postgrestRow));
         if (!rows.length) throw new Error(`rpc ${fn} returned no row`);
         const row = postgrestRow(rows[0]);
+        // A scalar-returning RPC (the daily load/replenish counters) comes
+        // back from PGlite as { "fn": value }; a hosted PostgREST answers
+        // with the bare value, so mirror that exact shape.
+        const keys = Object.keys(row);
+        const scalar = keys.length === 1 && keys[0] === fn && (typeof row[keys[0]] !== 'object' || row[keys[0]] === null)
+          ? row[keys[0]] : null;
+        if (scalar !== null) return respond(200, scalar);
         return respond(200, rpcRowShape === 'array' ? [row] : row);
       } catch (error) {
         return respond(400, sqlErrorBody(error));
@@ -250,7 +269,9 @@ export function createRestStockFetch(db, { rowShape } = {}) {
         addEq(parsed.searchParams.get('id'), 'id::text');
       }
       const columns = table === 'v2_sales'
-        ? 'id, date::text as date, product, payment, amount_cents, row_seq, product_id, quantity, stand'
+        // daily_stock is the additive T1 channel tag, read by the T2 sales
+        // layer so routing uses the trusted stored row.
+        ? 'id, date::text as date, product, payment, amount_cents, row_seq, product_id, quantity, stand, daily_stock'
         : 'id, name, price_cents, stock, archived';
       try {
         await become(db, 'authenticated');

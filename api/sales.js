@@ -1,4 +1,4 @@
-import { SalesError, validateDate, validateSale, validateSaleId } from '../lib/sales.js';
+import { SalesError, validateDate, validateSale, validateSaleId, validateDailySaleRow } from '../lib/sales.js';
 import { createSupabaseSalesApi } from '../lib/supabase.js';
 import { assertSameOrigin, createSessionManager } from '../lib/session.js';
 
@@ -12,6 +12,17 @@ export function sendJson(res, status, body) {
   });
   res.end(JSON.stringify(body));
 }
+
+// T2 daily edit/delete bodies use the canonical stored shape (the exact row
+// GET returned: `id` + integer `amountCents`, never requestId/amount). The
+// dispatch is shape-based, not channel-based: a legacy body keeps its exact
+// original parsing, and the DAILY vs LEGACY RPC is still chosen inside the
+// storage layer from the trusted stored row, so no caller-provided flag can
+// bypass the channel guard.
+const isDailyEditBody = body => !!body && typeof body === 'object' && !Array.isArray(body)
+  && typeof body.requestId !== 'string' && Number.isSafeInteger(body.amountCents);
+const isDailyDeleteBody = body => !!body && typeof body === 'object' && !Array.isArray(body)
+  && Number.isSafeInteger(body.previous?.amountCents);
 
 async function readJson(req) {
   if ((req.headers['content-type'] || '').split(';')[0].trim().toLowerCase() !== 'application/json') {
@@ -69,16 +80,23 @@ export function createSalesHandler({ env = process.env, supabaseFetch = globalTh
         sale = validateSale(await readJson(req));
       } else if (req.method === 'PUT') {
         const body = await readJson(req);
-        sale = validateSale(body);
-        previous = validateSale(body.previous);
+        if (isDailyEditBody(body)) {
+          sale = validateDailySaleRow(body);
+          previous = validateDailySaleRow(body.previous);
+        } else {
+          sale = validateSale(body);
+          previous = validateSale(body.previous);
+        }
         if (sale.id !== previous.id) throw new SalesError(400, 'INVALID_ID', 'El identificador de la venta no es válido.');
       } else if (req.method === 'DELETE') {
-        // Deletes now carry the full previous row (productId and quantity
+        // Deletes carry the full previous row (productId and quantity
         // included): the SQL validates it inside the transaction and refuses
         // to delete what the client no longer observed.
         const body = await readJson(req);
         saleId = validateSaleId(body);
-        previous = validateSale(body.previous);
+        previous = isDailyDeleteBody(body)
+          ? validateDailySaleRow(body.previous)
+          : validateSale(body.previous);
         if (saleId !== previous.id) throw new SalesError(400, 'INVALID_ID', 'El identificador de la venta no es válido.');
       } else {
         res.setHeader('Allow', 'GET, POST, PUT, DELETE');

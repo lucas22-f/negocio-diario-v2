@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import { createSessionHandler } from './api/session.js';
 import { createSalesHandler, sendJson } from './api/sales.js';
 import { createProductsHandler } from './api/products.js';
+import { createStockDaysHandler } from './api/stock-days.js';
 
 const publicRoot = new URL('./public/', import.meta.url);
 const files = new Map([
@@ -17,11 +18,13 @@ export function createApp(options = {}) {
   const sales = createSalesHandler(options);
   const products = createProductsHandler(options);
   const session = createSessionHandler(options);
+  const stockDays = createStockDaysHandler(options);
   return createServer(async (req, res) => {
     const path = req.url.split('?')[0];
     if (path === '/api/sales') return sales(req, res);
     if (path === '/api/products') return products(req, res);
     if (path === '/api/session') return session(req, res);
+    if (path === '/api/stock-days') return stockDays(req, res);
     const file = files.get(path);
     if (!file || !['GET', 'HEAD'].includes(req.method)) {
       return sendJson(res, 404, { error: { code: 'NOT_FOUND', message: 'No encontrado.' } });
