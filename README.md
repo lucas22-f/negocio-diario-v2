@@ -124,7 +124,9 @@ INVALID_AMOUNT / INVALID_ID / INVALID_NAME / INVALID_PRICE / INVALID_STOCK /
 INVALID_QUANTITY / INVALID_PRODUCT_ID / INVALID_ALLOW_NEGATIVE / INVALID_JSON`,
 `401 UNAUTHENTICATED`, `403 FORBIDDEN_ORIGIN / FORBIDDEN (28000/42501, no
 business access)`, `404 NOT_FOUND`, `409 ID_CONFLICT (sale replay content
-mismatch, same id kept working) / SALE_CONFLICT (CAS) / PRODUCT_CONFLICT
+mismatch, same id kept working) / SALE_CONFLICT (CAS) / DAILY_SALE_CHANNEL
+(a sale edited across its stored daily/legacy channel; nothing changes) /
+PRODUCT_CONFLICT
 (product CAS or duplicate active name) / INSUFFICIENT_STOCK (message carries
 `stock=`/`solicitado=` numbers; the UI may confirm and retry the SAME sale id
 with `allowNegative:true`) / PRODUCT_ARCHIVED`, `405 METHOD_NOT_ALLOWED`,
@@ -201,9 +203,13 @@ canonical stored shape (`id` + integer `amountCents`, the exact row GET
 returned) or the existing frontend legacy shape (`requestId` + `amount`) — the
 stored channel always decides the RPC, never a caller-provided flag. Snapshots
 that omit the `dailyStock` tag adopt the stored channel, so editing the current
-daily row never false-conflicts; an explicitly contradictory tag never
-converts the channel and fails like any other stale field (409). The observed
-`stand` in `previous` is compare-and-swapped too and is never inferred.
+daily row never false-conflicts. An explicit `dailyStock` tag that contradicts
+the stored channel — `true` on a legacy row or `false` on a daily row, sent on
+the proposed sale or on the observed `previous` snapshot, even when the rest
+of the content matches (a same-value no-op) — is refused with `409
+DAILY_SALE_CHANNEL` before any no-op or write: the row and every counter stay
+exactly as they were and the channel is never converted. The observed `stand`
+in `previous` is compare-and-swapped too and is never inferred.
 
 Stable daily error codes (same envelope `{error:{code,message}}`): `400
 INVALID_DATE / INVALID_STAND / INVALID_ITEMS / INVALID_ACTION /

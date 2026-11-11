@@ -825,36 +825,104 @@ test('an explicit contradictory channel tag never converts the stored channel', 
   const app = await listen(t, stockOptions(bridge));
   const { send, get } = await app.enter();
   const product = (await send('POST', '/api/products', { name: 'Canal Contradicho', stock: 5 })).body.product;
-  const DATE = '2030-04-04';
+  const LEGACY_DATE = '2030-04-04';
+  const DAILY_DATE = '2030-04-05';
   const legacy = {
-    requestId: 'dddd0000-0000-4000-8000-0000000000fb', date: DATE, product: 'Canal Contradicho',
+    requestId: 'dddd0000-0000-4000-8000-0000000000fb', date: LEGACY_DATE, product: 'Canal Contradicho',
     payment: 'efectivo', amount: '500', productId: product.id, quantity: 1, stand: 'fixed',
   };
   assert.equal((await send('POST', '/api/sales', legacy)).status, 201);
-
-  // Editing a LEGACY row while claiming the daily channel on the new row AND
-  // the observed snapshot: the tag is refused as a stale contradiction (it
-  // can never convert the row or flip the routing).
-  const contradictory = await send('PUT', '/api/sales', {
-    requestId: legacy.requestId, date: DATE, product: 'Canal Contradicho', payment: 'efectivo',
-    amount: '600', productId: product.id, quantity: 1, stand: 'fixed', dailyStock: true,
-    previous: { ...legacy, dailyStock: true },
+  await send('POST', '/api/stock-days', {
+    action: 'load', date: DAILY_DATE, stand: 'fixed',
+    items: [{ productId: product.id, initial: 3, prevInitial: null }],
   });
-  assert.equal(contradictory.status, 409);
-  assert.equal(contradictory.body.error.code, 'SALE_CONFLICT');
-  const untouched = (await get(`/api/sales?date=${DATE}`)).body.sales[0];
-  assert.equal(untouched.amountCents, 50000, 'the refused contradictory edit changed nothing');
-  assert.equal(!('dailyStock' in untouched), true, 'the row stayed legacy');
+  const dailyDraft = {
+    requestId: 'dddd0000-0000-4000-8000-0000000000fc', date: DAILY_DATE, product: 'Canal Contradicho',
+    payment: 'efectivo', amount: '1000', productId: product.id, quantity: 2, stand: 'fixed', dailyStock: true,
+  };
+  assert.equal((await send('POST', '/api/sales', dailyDraft)).status, 201);
 
-  // A tag only on the NEW body (not on the observed snapshot) is not a
-  // channel decision either: the edit goes through the stored legacy channel
-  // and the row stays legacy, never converted.
-  const claimedOnly = await send('PUT', '/api/sales', {
-    requestId: legacy.requestId, date: DATE, product: 'Canal Contradicho', payment: 'efectivo',
+  const CHANNEL_CODE = 'DAILY_SALE_CHANNEL';
+  const CHANNEL_MESSAGE = 'Esa venta pertenece al otro canal y solo se modifica con sus propias operaciones.';
+  // The full public state the refusal must leave byte-identical: both sale
+  // lists, the global product stock, the daily figures (public API) and the
+  // movement ledger (SQL fixture, secondary corroboration).
+  const snapshot = async () => ({
+    legacySales: (await get(`/api/sales?date=${LEGACY_DATE}`)).body.sales,
+    dailySales: (await get(`/api/sales?date=${DAILY_DATE}`)).body.sales,
+    productStock: (await get('/api/products')).body.products.find(p => p.id === product.id).stock,
+    day: (await get(`/api/stock-days?date=${DAILY_DATE}`)).body.rows
+      .find(row => row.productId === product.id && row.stand === 'fixed'),
+    movements: await totalMovements(),
+  });
+  const refuse = async (body, label) => {
+    const before = await snapshot();
+    const rpcBefore = bridge.calls.rpc;
+    const answer = await send('PUT', '/api/sales', body);
+    assert.equal(answer.status, 409, `${label}: the contradictory tag is refused`);
+    assert.equal(answer.body.error.code, CHANNEL_CODE, `${label}: exact error code`);
+    assert.equal(answer.body.error.message, CHANNEL_MESSAGE, `${label}: exact error message`);
+    assert.equal(bridge.calls.rpc, rpcBefore, `${label}: no write RPC ran`);
+    assert.deepEqual(await snapshot(), before, `${label}: the whole state stayed unchanged`);
+    return answer;
+  };
+
+  // T4 verifier reproduction (S5): editing a LEGACY row while claiming the
+  // daily channel on the new row is refused before any no-op or write — even
+  // when the rest of the content matches (a same-value no-op) — so the tag
+  // can never convert the row or flip the routing.
+  const contradictory = {
+    requestId: legacy.requestId, date: LEGACY_DATE, product: 'Canal Contradicho', payment: 'efectivo',
     amount: '600', productId: product.id, quantity: 1, stand: 'fixed', dailyStock: true,
     previous: legacy,
+  };
+  await refuse(contradictory, 'dailyStock:true claimed on a legacy row');
+  await refuse({ ...contradictory, amount: '500' }, 'same-value no-op contradiction on a legacy row');
+  // The contradiction is refused from the OBSERVED snapshot too, in both
+  // directions, with or without a contradictory proposed tag.
+  await refuse({ ...contradictory, previous: { ...legacy, dailyStock: true } },
+    'contradictory previous snapshot on a legacy row');
+
+  // The daily direction: editing the current daily row (canonical stored
+  // shape) while explicitly claiming the legacy channel is refused too.
+  const dailyRow = (await get(`/api/sales?date=${DAILY_DATE}`)).body.sales[0];
+  assert.equal(dailyRow.dailyStock, true);
+  const dailyBody = extra => ({
+    id: dailyRow.id, date: DAILY_DATE, product: 'Canal Contradicho', payment: 'efectivo',
+    amountCents: dailyRow.amountCents, productId: product.id, quantity: 2, stand: 'fixed',
+    ...extra,
   });
-  assert.equal(claimedOnly.status, 200);
-  assert.equal(!('dailyStock' in claimedOnly.body.sale), true,
-    'an explicit contradictory tag never converted the stored channel');
+  await refuse({ ...dailyBody({ dailyStock: false, amountCents: dailyRow.amountCents + 100 }), previous: dailyRow },
+    'dailyStock:false claimed on a daily row (canonical shape)');
+  await refuse({ ...dailyBody({ dailyStock: false }), previous: dailyRow },
+    'same-value no-op contradiction on a daily row');
+  await refuse({ ...dailyBody({}), previous: { ...dailyRow, dailyStock: false } },
+    'contradictory previous snapshot on a daily row');
+
+  // Omitted tags everywhere stay valid: the trusted stored channel decides,
+  // the edit goes through the legacy path and the row is never converted.
+  const edited = await send('PUT', '/api/sales', {
+    requestId: legacy.requestId, date: LEGACY_DATE, product: 'Canal Contradicho', payment: 'efectivo',
+    amount: '600', productId: product.id, quantity: 1, stand: 'fixed', previous: legacy,
+  });
+  assert.equal(edited.status, 200);
+  assert.equal(!('dailyStock' in edited.body.sale), true, 'the legacy row was never converted');
+  assert.equal(edited.body.sale.amountCents, 60000);
+  const editedStored = { ...legacy, amount: '600' };
+  const rpcBeforeNoop = bridge.calls.rpc;
+  const noop = await send('PUT', '/api/sales', {
+    requestId: legacy.requestId, date: LEGACY_DATE, product: 'Canal Contradicho', payment: 'efectivo',
+    amount: '600', productId: product.id, quantity: 1, stand: 'fixed', previous: editedStored,
+  });
+  assert.equal(noop.status, 200);
+  assert.equal(bridge.calls.rpc, rpcBeforeNoop, 'a consistent tag-omission no-op still emits zero write RPCs');
+  // An explicit CONSISTENT false on a legacy row is a decision the stored
+  // channel agrees with: it edits/no-ops exactly like the untagged shape.
+  const falseEdit = await send('PUT', '/api/sales', {
+    requestId: legacy.requestId, date: LEGACY_DATE, product: 'Canal Contradicho', payment: 'efectivo',
+    amount: '700', productId: product.id, quantity: 1, stand: 'fixed', dailyStock: false,
+    previous: { ...editedStored, dailyStock: false },
+  });
+  assert.equal(falseEdit.status, 200, 'an explicit consistent false is a valid legacy edit');
+  assert.equal(!('dailyStock' in falseEdit.body.sale), true);
 });
