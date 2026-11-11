@@ -113,6 +113,39 @@
     </div>
     <section id="stock-panel" class="entry stock" aria-labelledby="stock-title" hidden tabindex="-1">
       <h2 id="stock-title">Stock</h2>
+      <h3>Stock del día</h3>
+      <div class="toolbar">
+        <div class="day-picker">
+          <label for="stock-date">Fecha del stock</label>
+          <input id="stock-date" type="date" min="0001-01-01" max="9999-12-31" required>
+        </div>
+        <fieldset>
+          <legend>Puesto</legend>
+          <div class="payments">
+            <label><input id="stock-view-fixed" name="stock-stand" type="radio" value="fixed" checked> Puesto fijo</label>
+            <label><input id="stock-view-mobile" name="stock-stand" type="radio" value="mobile"> Móvil</label>
+          </div>
+        </fieldset>
+        <button id="copy-previous" type="button">Copiar carga del día anterior</button>
+      </div>
+      <p id="stock-day-status" role="status" aria-live="polite"></p>
+      <form id="stock-day-form" hidden>
+        <p id="stock-day-product" class="hint"></p>
+        <div>
+          <label id="stock-day-label" for="stock-day-quantity">Cantidad cargada</label>
+          <input id="stock-day-quantity" type="number" min="0" max="1000000" step="1" inputmode="numeric" required>
+          <p id="stock-day-help" class="hint"></p>
+        </div>
+        <button id="stock-day-save" type="submit" aria-busy="false">Guardar carga</button>
+        <button id="stock-day-cancel" type="button">Cancelar</button>
+      </form>
+      <button id="day-negative-confirm" type="button" class="negative-confirm" hidden>Aplicar igual y permitir disponibilidad negativa</button>
+      <table id="stock-day-table" aria-busy="true">
+        <caption id="stock-day-caption">Elegí una fecha · Puesto</caption>
+        <thead><tr><th scope="col">Producto</th><th scope="col" class="day-figure">Cantidad cargada</th><th scope="col" class="day-figure">Vendido</th><th scope="col" class="day-figure">Disponible</th><th scope="col" class="actions"><span class="visually-hidden">Acciones de carga</span></th></tr></thead>
+        <tbody id="stock-rows"></tbody>
+      </table>
+      <h3>Catálogo</h3>
       <form id="stock-form">
         <div>
           <label for="stock-name">Producto</label>
@@ -124,19 +157,14 @@
             pattern="[0-9]{1,9}([,.][0-9]{1,2})?" placeholder="Ej.: 12,50">
           <p class="hint">Se usa para precargar el monto al vender este producto.</p>
         </div>
-        <div>
-          <label for="stock-stock">Unidades</label>
-          <input id="stock-stock" name="stock" type="number" step="1" value="0" required inputmode="numeric">
-          <p class="hint">Puede quedar en negativo solo si lo confirmás.</p>
-        </div>
         <button id="stock-button" type="submit" aria-busy="false">Guardar producto</button>
-        <button id="stock-negative-confirm" type="button" class="negative-confirm" hidden>Guardar igual y permitir stock negativo</button>
         <button id="stock-cancel" type="button" hidden>Cancelar</button>
+        <p class="hint">El stock de cada día y puesto se carga en la sección de arriba.</p>
         <p id="stock-status" role="status" aria-live="polite"></p>
       </form>
       <table id="stock-table" aria-busy="true">
         <caption>Todos los productos · ARS</caption>
-        <thead><tr><th scope="col">Producto</th><th scope="col">Precio (ARS)</th><th scope="col">Unidades</th><th scope="col" class="actions"><span class="visually-hidden">Acciones de producto</span></th></tr></thead>
+        <thead><tr><th scope="col">Producto</th><th scope="col">Precio (ARS)</th><th scope="col" class="actions"><span class="visually-hidden">Acciones de producto</span></th></tr></thead>
         <tbody id="products"></tbody>
       </table>
     </section>

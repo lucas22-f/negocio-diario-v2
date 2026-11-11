@@ -41,16 +41,33 @@ const stockPanel = document.getElementById('stock-panel');
 const stockForm = document.getElementById('stock-form');
 const stockName = document.getElementById('stock-name');
 const stockPrice = document.getElementById('stock-price');
-const stockStock = document.getElementById('stock-stock');
 const stockButton = document.getElementById('stock-button');
 const stockCancel = document.getElementById('stock-cancel');
 const stockStatus = document.getElementById('stock-status');
 const stockTable = document.getElementById('stock-table');
 const productRows = document.getElementById('products');
-const stockNegativeConfirm = document.getElementById('stock-negative-confirm');
+// T3 (S1-S5): the daily stock view. One date input, one stand view control
+// (both stands arrive in a single read) and the Cargado · Vendido ·
+// Disponible table driven by /api/stock-days, never by global stock.
+const stockDate = document.getElementById('stock-date');
+const stockViewFixed = document.getElementById('stock-view-fixed');
+const stockViewMobile = document.getElementById('stock-view-mobile');
+const copyPrevious = document.getElementById('copy-previous');
+const stockDayStatus = document.getElementById('stock-day-status');
+const stockDayForm = document.getElementById('stock-day-form');
+const stockDayProduct = document.getElementById('stock-day-product');
+const stockDayLabel = document.getElementById('stock-day-label');
+const stockDayQuantity = document.getElementById('stock-day-quantity');
+const stockDayHelp = document.getElementById('stock-day-help');
+const stockDaySave = document.getElementById('stock-day-save');
+const stockDayCancel = document.getElementById('stock-day-cancel');
+const dayNegativeConfirm = document.getElementById('day-negative-confirm');
+const stockDayTable = document.getElementById('stock-day-table');
+const stockDayCaption = document.getElementById('stock-day-caption');
+const stockRows = document.getElementById('stock-rows');
 const today = new Date();
 const localDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-dateInput.value = listDate.value = localDate;
+dateInput.value = listDate.value = stockDate.value = localDate;
 let saving = false;
 let deleting = false;
 let editing = null;
@@ -65,6 +82,8 @@ for (const control of [standFixed, standMobile]) control.addEventListener('chang
   if (!editing) {
     try { globalThis.localStorage?.setItem(standKey, selectedStand()); } catch { /* Device preference is optional. */ }
   }
+  // Availability is per stand: the same cached read serves the other view.
+  if (suggestionOpen && catalogue !== null) openSuggestions();
 });
 let savedDraft = null;
 let requestId = null;
@@ -91,7 +110,16 @@ let editingProduct = null; // { id, name, priceCents, stock } observed snapshot
 let savedProductDraft = null;
 let productConfirm = null;
 let pendingNegative = null; // sale draft awaiting an explicit allowance
-let pendingNegativeProduct = null; // product draft awaiting the same
+// Daily stock state: the read cache is keyed by date (one read carries both
+// stands) and the observed rows are the only CAS source for load edits.
+const stockDayStand = () => stockViewFixed.checked ? 'fixed' : 'mobile';
+const dayCache = new Map(); // date -> rows for BOTH stands, latest observed
+const daySeq = new Map(); // date -> latest request token (stale answers drop)
+const dayFetches = new Set(); // dates with one read in flight
+let editingDay = null; // { productId, product, mode: 'load'|'replenish', row }
+let stockDaySaving = false;
+let pendingNegativeDay = null; // day payload awaiting an explicit allowance
+let catalogueById = new Map(); // catalogue identity for the day rows' archive state
 
 function message(element, text, failed = false) {
   if (element === saveStatus) {
@@ -120,7 +148,6 @@ function enterLogin(reason) {
   if (productConfirm) productConfirm();
   if (editingProduct) finishProductEdit();
   hideNegative();
-  hideProductNegative();
   closeSuggestions();
   closeMenu(false);
   stockPanel.hidden = true;
@@ -310,7 +337,17 @@ function saleFields(sale) {
     amount: moneyText(sale.amountCents),
     productId: sale.productId ?? null, quantity: sale.quantity ?? 1,
     ...(sale.stand ? { stand: sale.stand } : {}),
+    // The stored channel travels with the row: a daily edit/delete keeps the
+    // tag explicitly, a legacy row never gains it.
+    ...(sale.dailyStock ? { dailyStock: true } : {}),
   };
+}
+
+// A daily mutation changes that date's availability. The cache entry is
+// dropped so the next explicit availability read is fresh; the stock panel
+// always re-reads when it is shown, so nothing polls here.
+function invalidateDay(date) {
+  if (date) dayCache.delete(date);
 }
 
 function startEdit(sale) {
@@ -418,7 +455,10 @@ function showScreen(next) {
   closeSuggestions();
   closeMenu(false);
   (next === 'stock' ? stockPanel : workspace).focus();
-  if (next === 'stock') loadProducts(false);
+  if (next === 'stock') {
+    loadProducts(false);
+    loadStockDay(false); // the daily view always re-reads the shown date
+  }
 }
 
 menuSales.addEventListener('click', () => showScreen('sales'));
@@ -452,9 +492,13 @@ function openSuggestions() {
     name.textContent = item.name;
     const meta = document.createElement('span');
     meta.className = 'option-meta';
-    meta.textContent = item.priceCents === null || item.priceCents === undefined
-      ? ` · quedan ${item.stock} · sin precio`
-      : ` · quedan ${item.stock} · ${formatMoney(item.priceCents)}`;
+    // Availability is the SALE date + SALE stand figure of the daily channel;
+    // the global catalogue stock is never shown as the daily authority.
+    const parts = [];
+    const available = dayAvailability(item.id);
+    if (available !== null) parts.push(`quedan ${available}`);
+    parts.push(item.priceCents === null || item.priceCents === undefined ? 'sin precio' : formatMoney(item.priceCents));
+    meta.textContent = parts.join(' · ');
     option.appendChild(name);
     option.appendChild(meta);
     option.addEventListener('click', () => chooseProduct(item));
@@ -532,6 +576,294 @@ product.addEventListener('keydown', event => {
   }
 });
 
+// -----------------------------------------------------------------------
+// Daily stock (T3, S1-S5): one read per date carries BOTH stands, so the
+// view controls and the sale suggestions all work from the same cache. The
+// cache is keyed by date, stale answers are dropped by a per-date token,
+// and no timer ever re-reads: reads happen on open, on a date change and
+// after an acknowledged day mutation (or lazily for suggestions after an
+// acknowledged daily sale).
+// -----------------------------------------------------------------------
+function dayAvailability(productId) {
+  const rows = dayCache.get(dateInput.value);
+  if (!rows) return null;
+  const row = rows.find(item => item.productId === productId && item.stand === selectedStand());
+  return row ? row.available : null;
+}
+
+async function fetchDay(date) {
+  if (dayFetches.has(date)) return null; // one read per date at a time
+  dayFetches.add(date);
+  const seq = (daySeq.get(date) ?? 0) + 1;
+  daySeq.set(date, seq);
+  try {
+    const data = await api(`/api/stock-days?date=${encodeURIComponent(date)}`);
+    if (daySeq.get(date) !== seq) return null; // a newer read for this date exists
+    dayCache.set(date, data.rows ?? []);
+    // Fresh figures may change what the open suggestions say.
+    if (suggestionOpen && catalogue !== null && dateInput.value === date) openSuggestions();
+    return data;
+  } finally {
+    dayFetches.delete(date);
+  }
+}
+
+// Suggestions show availability for the SALE date + SALE stand. Focusing the
+// product field (or changing the sale date with the list open) is the only
+// trigger; a failed read just leaves the availability out until next time.
+function ensureSaleDay() {
+  const date = dateInput.value;
+  if (!date || dayCache.has(date)) return;
+  fetchDay(date).catch(error => {
+    if (error.status === 401) enterLogin(error.message); // the gate wins
+  });
+}
+
+function dayCaption(date, stand) {
+  const standLabel = stand === 'fixed' ? 'Puesto fijo' : 'Móvil';
+  return date ? `${date.split('-').reverse().join('/')} · ${standLabel}` : 'Elegí una fecha · Puesto';
+}
+
+async function loadStockDay(silent) {
+  const date = stockDate.value;
+  if (!date) return;
+  if (!silent) stockDayTable.setAttribute('aria-busy', 'true');
+  try {
+    const data = await fetchDay(date);
+    if (data && stockDate.value === date) renderStockDay();
+  } catch (error) {
+    if (error.status === 401) {
+      enterLogin(error.message);
+    } else if (stockDate.value === date && !silent) {
+      message(stockDayStatus, `No se pudieron cargar las cifras del día. ${error.message || 'Reintentá en unos momentos.'}`, true);
+    }
+  } finally {
+    if (stockDate.value === date) stockDayTable.setAttribute('aria-busy', 'false');
+  }
+}
+
+function renderStockDay() {
+  const date = stockDate.value;
+  const stand = stockDayStand();
+  stockDayCaption.textContent = dayCaption(date, stand);
+  const rows = (dayCache.get(date) || []).filter(row => row.stand === stand);
+  stockRows.replaceChildren();
+  if (!rows.length) {
+    const row = stockRows.insertRow();
+    const cell = row.insertCell();
+    cell.colSpan = 5;
+    cell.className = 'empty';
+    cell.textContent = 'Todavía no hay carga para esta fecha.';
+    return;
+  }
+  for (const dayRow of rows) {
+    // The catalogue owns the archive state; before it arrives the rows are
+    // shown plainly and the server still refuses an archived edit.
+    const known = catalogue !== null ? catalogueById.get(dayRow.productId) : undefined;
+    const archived = Boolean(known?.archived);
+    const row = stockRows.insertRow();
+    const productCell = row.insertCell();
+    productCell.className = 'product';
+    productCell.textContent = archived ? `${dayRow.product} · Archivado` : dayRow.product;
+    // The approved view: Cantidad cargada · Vendido · Disponible.
+    [dayRow.loaded, dayRow.sold, dayRow.available].forEach((figure, index) => {
+      const cell = row.insertCell();
+      cell.className = 'day-figure';
+      cell.dataset.label = ['Cantidad cargada', 'Vendido', 'Disponible'][index];
+      cell.textContent = String(figure);
+    });
+    const actionsCell = row.insertCell();
+    if (!archived) mountDayActions(actionsCell, dayRow);
+    if (archived) row.className = 'archived-row';
+  }
+}
+
+function mountDayActions(cell, dayRow) {
+  cell.className = 'actions';
+  const load = document.createElement('button');
+  load.type = 'button';
+  load.className = 'row-edit icon-button';
+  load.setAttribute('aria-label', `Modificar carga de ${dayRow.product}`);
+  load.setAttribute('title', 'Modificar carga');
+  load.appendChild(actionIcon('m16 3 5 5M3 21l5-1L21 7a2 2 0 0 0-5-5L3 16Z'));
+  load.addEventListener('click', () => startDayEdit(dayRow, 'load'));
+  cell.appendChild(load);
+  const addUnits = document.createElement('button');
+  addUnits.type = 'button';
+  addUnits.className = 'row-add icon-button';
+  addUnits.setAttribute('aria-label', `Agregar unidades de ${dayRow.product}`);
+  addUnits.setAttribute('title', 'Agregar unidades');
+  addUnits.appendChild(actionIcon('M12 5v14M5 12h14'));
+  addUnits.addEventListener('click', () => startDayEdit(dayRow, 'replenish'));
+  cell.appendChild(addUnits);
+}
+
+function startDayEdit(dayRow, mode) {
+  if (stockDaySaving) return;
+  if (editingDay) {
+    message(stockDayStatus, 'Guardá o cancelá la edición del día antes de modificar otro producto.', true);
+    return;
+  }
+  // The observed row snapshot is the only CAS source for this edit.
+  editingDay = {
+    productId: dayRow.productId,
+    product: dayRow.product,
+    mode,
+    row: { initialLoad: dayRow.initialLoad, loaded: dayRow.loaded, sold: dayRow.sold, available: dayRow.available },
+  };
+  hideDayNegative();
+  stockDayProduct.textContent = `${dayRow.product} · ${dayCaption(stockDate.value, stockDayStand())}`;
+  const isLoad = mode === 'load';
+  stockDayLabel.textContent = isLoad ? 'Cantidad cargada' : 'Unidades a agregar';
+  stockDayHelp.textContent = isLoad
+    ? 'Es lo que llevás al empezar el día y el puesto. Las ventas no lo cambian.'
+    : 'Se suman a la carga de este día y puesto.';
+  stockDayQuantity.value = isLoad ? String(dayRow.initialLoad) : '1';
+  stockDayQuantity.max = isLoad ? '1000000' : String(Math.max(0, 1000000 - (dayRow.loaded - dayRow.initialLoad)));
+  stockDaySave.textContent = isLoad ? 'Guardar carga' : 'Agregar unidades';
+  stockDayForm.hidden = false;
+  stockDayQuantity.focus();
+}
+
+function finishDayEdit() {
+  editingDay = null;
+  stockDayForm.hidden = true;
+  hideDayNegative();
+}
+
+stockDayCancel.addEventListener('click', () => {
+  if (stockDaySaving) return;
+  finishDayEdit();
+  message(stockDayStatus, 'Edición cancelada.');
+});
+
+function hideDayNegative() {
+  pendingNegativeDay = null;
+  dayNegativeConfirm.hidden = true;
+}
+
+stockDayQuantity.addEventListener('input', hideDayNegative);
+
+dayNegativeConfirm.addEventListener('click', () => {
+  if (stockDaySaving || !pendingNegativeDay) return;
+  const retained = pendingNegativeDay;
+  const now = buildDayPayload();
+  if (!now || JSON.stringify(now) !== JSON.stringify(retained)) {
+    hideDayNegative(); // a changed draft needs a fresh decision
+    return;
+  }
+  hideDayNegative();
+  submitDayAction(retained, true);
+});
+
+function buildDayPayload() {
+  if (stockDaySaving || !editingDay || !stockDayForm.reportValidity()) return null;
+  const value = Number.parseInt(stockDayQuantity.value, 10);
+  if (!Number.isSafeInteger(value) || value < 0 || value > 1000000) {
+    message(stockDayStatus, 'Ingresá las unidades como número entero entre 0 y 1000000.', true);
+    return null;
+  }
+  const observed = editingDay.row;
+  if (editingDay.mode === 'load') {
+    return {
+      action: 'load', date: stockDate.value, stand: stockDayStand(),
+      items: [{ productId: editingDay.productId, initial: value, prevInitial: observed.initialLoad }],
+    };
+  }
+  const observedReplenished = observed.loaded - observed.initialLoad;
+  const replenished = observedReplenished + value;
+  if (replenished > 1000000) {
+    message(stockDayStatus, 'El agregado del día no puede superar 1000000 unidades.', true);
+    return null;
+  }
+  return {
+    action: 'replenish', date: stockDate.value, stand: stockDayStand(),
+    items: [{ productId: editingDay.productId, replenished, prevReplenished: observedReplenished }],
+  };
+}
+
+stockDayForm.addEventListener('submit', event => {
+  event.preventDefault();
+  if (stockDaySaving || !editingDay) return;
+  const payload = buildDayPayload();
+  if (payload) submitDayAction(payload, false);
+});
+
+copyPrevious.addEventListener('click', () => {
+  if (stockDaySaving) return;
+  // The copy carries the target date and the stock-view stand only: it copies
+  // the prepared quantities of the previous calendar day, never balances.
+  submitDayAction({ action: 'copy', date: stockDate.value, stand: stockDayStand() }, false);
+});
+
+stockDate.addEventListener('change', () => {
+  if (editingDay) finishDayEdit();
+  hideDayNegative();
+  stockRows.replaceChildren(); // another day's rows never linger
+  stockDayCaption.textContent = dayCaption(stockDate.value, stockDayStand());
+  message(stockDayStatus, '');
+  loadStockDay(false);
+});
+
+for (const control of [stockViewFixed, stockViewMobile]) control.addEventListener('change', () => {
+  // The observed CAS row is stand-specific: an open edit cannot survive it.
+  if (editingDay) finishDayEdit();
+  hideDayNegative();
+  stockDayCaption.textContent = dayCaption(stockDate.value, stockDayStand());
+  if (dayCache.has(stockDate.value)) renderStockDay();
+});
+
+async function submitDayAction(payload, isRetry) {
+  stockDaySaving = true;
+  hideDayNegative();
+  const body = isRetry ? { ...payload, allowNegative: true } : payload;
+  stockDaySave.disabled = true;
+  stockDaySave.setAttribute('aria-busy', 'true');
+  stockDaySave.textContent = 'Guardando…';
+  copyPrevious.disabled = true;
+  stockDayQuantity.disabled = true;
+  message(stockDayStatus, isRetry ? 'Aplicando…' : 'Guardando…');
+  let done = false;
+  try {
+    const data = await api('/api/stock-days', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    done = true;
+    finishDayEdit();
+    message(stockDayStatus,
+      data.action === 'copy'
+        ? data.applied === 0
+          ? 'El día anterior no tiene carga para copiar.'
+          : `Copia lista: ${data.applied} ${data.applied === 1 ? 'producto' : 'productos'} del día anterior.`
+        : data.action === 'load' ? 'Carga guardada.' : 'Unidades agregadas.');
+  } catch (error) {
+    if (error.status === 401) {
+      message(stockDayStatus, '');
+      enterLogin(error.message); // nothing was applied; the draft waits
+    } else if (error.code === 'INSUFFICIENT_STOCK' && !isRetry) {
+      // Only the visible explicit confirm may take the availability below
+      // zero: the same payload is retried unchanged with allowNegative true.
+      pendingNegativeDay = payload;
+      dayNegativeConfirm.hidden = false;
+      message(stockDayStatus, `${error.message} Confirmá para aplicarlo igual.`, true);
+    } else if (error.code === 'DAY_ALREADY_LOADED') {
+      message(stockDayStatus, 'Ese día ya tiene su propia carga y no se pisa. No se sobrescribió nada.', true);
+    } else {
+      message(stockDayStatus, error.message || 'No pudimos guardar la carga del día.', true);
+    }
+  } finally {
+    stockDaySaving = false;
+    stockDaySave.disabled = false;
+    stockDaySave.setAttribute('aria-busy', 'false');
+    stockDaySave.textContent = editingDay?.mode === 'replenish' ? 'Agregar unidades' : 'Guardar carga';
+    copyPrevious.disabled = false;
+    stockDayQuantity.disabled = false;
+    // An acknowledged day mutation refreshes the shown figures exactly once;
+    // a failed one triggers no read and keeps the draft.
+    if (done) loadStockDay(true);
+  }
+}
+
 async function loadProducts(silent, after) {
   if (stockLoading) return;
   stockLoading = true;
@@ -542,7 +874,10 @@ async function loadProducts(silent, after) {
   try {
     const data = await api('/api/products');
     catalogue = data.products;
+    catalogueById = new Map(catalogue.map(item => [item.id, item]));
     renderProducts();
+    // Archive flags come from the catalogue: the day rows join against it.
+    if (dayCache.has(stockDate.value)) renderStockDay();
     if (!silent) message(stockStatus, ''); // the fresh listing is its own result
     if (after) after();
   } catch (error) {
@@ -563,7 +898,7 @@ function renderProducts() {
   if (!catalogue.length) {
     const row = productRows.insertRow();
     const cell = row.insertCell();
-    cell.colSpan = 4;
+    cell.colSpan = 3;
     cell.className = 'empty';
     cell.textContent = 'Todavía no hay productos en el stock. Agregá el primero.';
     return;
@@ -576,9 +911,8 @@ function renderProducts() {
     const priceCell = row.insertCell();
     priceCell.className = 'money';
     priceCell.textContent = item.priceCents === null || item.priceCents === undefined ? '—' : formatMoney(item.priceCents);
-    const stockCell = row.insertCell();
-    stockCell.className = 'stock-units';
-    stockCell.textContent = String(item.stock);
+    // The legacy global units are internal compatibility data only: the
+    // catalogue shows name, price and actions, never the balance.
     mountProductActions(row.insertCell(), item);
     if (item.archived) {
       row.className = 'archived-row';
@@ -649,10 +983,8 @@ function startProductEdit(item) {
   editingProduct = { id: item.id, name: item.name, priceCents: item.priceCents ?? null, stock: item.stock };
   stockName.value = item.name;
   stockPrice.value = item.priceCents === null || item.priceCents === undefined ? '' : moneyText(item.priceCents);
-  stockStock.value = String(item.stock);
   stockButton.textContent = 'Guardar cambios';
   stockCancel.hidden = false;
-  hideProductNegative();
   message(stockStatus, 'Estás modificando un producto. No se reescribe el historial de ventas.');
   stockName.focus();
 }
@@ -663,7 +995,6 @@ function finishProductEdit() {
   savedProductDraft = null;
   stockButton.textContent = 'Guardar producto';
   stockCancel.hidden = true;
-  hideProductNegative();
 }
 
 stockCancel.addEventListener('click', () => {
@@ -673,23 +1004,16 @@ stockCancel.addEventListener('click', () => {
   stockName.focus();
 });
 
-function hideProductNegative() {
-  pendingNegativeProduct = null;
-  stockNegativeConfirm.hidden = true;
-}
-
 function buildProductPayload() {
   if (stockSaving || stockDeleting || !stockForm.reportValidity()) return null;
   const fields = new FormData(stockForm);
   const payload = { name: fields.get('name') };
   const price = fields.get('price');
   if (typeof price === 'string' && price.trim()) payload.price = price.trim();
-  const stockValue = Number(fields.get('stock'));
-  if (!Number.isSafeInteger(stockValue)) {
-    message(stockStatus, 'Ingresá las unidades como número entero.', true);
-    return null;
-  }
-  payload.stock = stockValue;
+  // The global units are internal compatibility data: creation starts at the
+  // legacy 0 and an edit re-sends the observed stock untouched, so the UI
+  // never edits or displays the global balance.
+  payload.stock = editingProduct ? editingProduct.stock : 0;
   if (editingProduct) {
     payload.id = editingProduct.id;
     payload.previous = { ...editingProduct };
@@ -697,35 +1021,17 @@ function buildProductPayload() {
   return payload;
 }
 
-stockNegativeConfirm.addEventListener('click', () => {
-  if (stockSaving || stockDeleting || !pendingNegativeProduct) {
-    if (!stockSaving && !stockDeleting && pendingNegativeProduct) hideProductNegative();
-    return;
-  }
-  const retained = pendingNegativeProduct;
-  const now = buildProductPayload();
-  if (!now
-    || now.name !== retained.name || now.price !== retained.price || now.stock !== retained.stock
-    || (now.previous ? JSON.stringify(now.previous) : null) !== JSON.stringify(retained.previous)) {
-    hideProductNegative(); // a changed draft needs a fresh decision
-    return;
-  }
-  hideProductNegative();
-  submitProduct(retained, true);
-});
-
 stockForm.addEventListener('submit', event => {
   event.preventDefault();
   if (stockSaving || stockDeleting) return;
   const payload = buildProductPayload();
-  if (payload) submitProduct(payload, false);
+  if (payload) submitProduct(payload);
 });
 
-async function submitProduct(payload, isRetry) {
+async function submitProduct(payload) {
   stockSaving = true;
-  hideProductNegative();
   const updating = Boolean(editingProduct);
-  const body = isRetry ? { ...payload, allowNegative: true } : payload;
+  const body = payload;
   stockButton.disabled = true;
   stockButton.setAttribute('aria-busy', 'true');
   stockButton.textContent = 'Guardando…';
@@ -744,19 +1050,12 @@ async function submitProduct(payload, isRetry) {
     else {
       stockName.value = '';
       stockPrice.value = '';
-      stockStock.value = '0';
     }
     message(stockStatus, updating ? 'Producto modificado.' : 'Producto guardado.');
   } catch (error) {
     if (error.status === 401) {
       message(stockStatus, '');
       enterLogin(error.message); // nothing was saved; the draft waits
-    } else if (error.code === 'INSUFFICIENT_STOCK' && !isRetry) {
-      // Going below zero only happens through the visible explicit confirm;
-      // the same draft is retried unchanged with allowNegative true.
-      pendingNegativeProduct = payload;
-      stockNegativeConfirm.hidden = false;
-      message(stockStatus, `${error.message} Confirmá para llevar el stock a negativo.`, true);
     } else {
       message(stockStatus, `${error.message || 'No pudimos guardar el producto.'} Los datos siguen en el formulario.`, true);
     }
@@ -819,6 +1118,8 @@ async function deleteShownSale(sale) {
       // included): the server refuses to delete what we no longer observed.
       body: JSON.stringify({ id: sale.id, previous: saleFields(sale) }),
     });
+    // A daily delete restores that day/stand availability.
+    if (sale.dailyStock) invalidateDay(sale.date);
     outcome = { text: 'Venta eliminada.', failed: false };
   } catch (error) {
     if (error.status === 401) {
@@ -958,6 +1259,9 @@ function buildSalePayload() {
     amount: fields.get('amount'), productId,
     quantity: productId ? parseQuantity(fields.get('quantity')) : 1,
     ...(selectedStand() ? { stand: selectedStand() } : {}),
+    // Every new sale consumes the day/stand availability (the form always
+    // requires a stand); an edit keeps exactly the stored channel.
+    ...(!editing || editing.dailyStock ? { dailyStock: true } : {}),
   };
 }
 
@@ -996,6 +1300,12 @@ async function submitSale(payload, allowedNegative) {
     message(saveStatus, updating ? 'Venta modificada.' : data.replayed ? 'Venta ya guardada. No se duplicó.' : 'Venta guardada.');
     saveSuccessIcon.hidden = false;
     saveFeedback.dataset.success = 'true';
+    // An acknowledged daily mutation moves the day's availability: the next
+    // explicit availability read must be fresh. No polling runs.
+    if (payload.dailyStock) {
+      invalidateDay(payload.date);
+      if (updating) invalidateDay(editing.previous.date);
+    }
     // An acknowledged mutation moves stock; the cached product list is read
     // once more so the next suggestion shows the real stock. No polling runs.
     if (catalogue !== null) loadProducts(true);
@@ -1050,6 +1360,15 @@ form.addEventListener('submit', event => {
   submitSale(buildSalePayload(), false);
 });
 listDate.addEventListener('change', loadSales);
+// The sale date owns the suggestions' availability; the draft is untouched.
+dateInput.addEventListener('change', () => {
+  if (suggestionOpen) ensureSaleDay();
+});
+// Engaging the product field (a click or any typed key) prepares the sale
+// day's availability once per date; no focus/visibility rescue exists.
+for (const event of ['click', 'keydown']) {
+  product.addEventListener(event, () => ensureSaleDay());
+}
 
 loginForm.addEventListener('submit', async event => {
   event.preventDefault();
@@ -1073,7 +1392,10 @@ loginForm.addEventListener('submit', async event => {
     message(listStatus, '');
     enterAuthenticated();
     loadSales(); // One refresh of the selected day; no polling follows it.
-    if (screenName === 'stock') loadProducts(false);
+    if (screenName === 'stock') {
+      loadProducts(false);
+      loadStockDay(false);
+    }
   } catch (error) {
     message(loginStatus, error.message || 'No se pudo iniciar sesión. Reintentá en unos momentos.', true);
   } finally {
@@ -1106,8 +1428,18 @@ logoutButton.addEventListener('click', async () => {
     readNotice = null;
     queuedRead = false;
     catalogue = null; // An anonymous screen holds no business catalogue.
+    catalogueById = new Map();
+    dayCache.clear(); // the daily figures are business data too
+    daySeq.clear();
+    dayFetches.clear();
+    editingDay = null;
+    stockDayForm.hidden = true;
+    stockRows.replaceChildren();
+    stockDayTable.setAttribute('aria-busy', 'true');
+    stockDayCaption.textContent = 'Elegí una fecha · Puesto';
+    message(stockDayStatus, '');
+    hideDayNegative();
     hideNegative();
-    hideProductNegative();
     if (editingProduct) finishProductEdit();
     enterLogin();
   } catch (error) {
@@ -1130,8 +1462,14 @@ stockPanel.hidden = true;
 save.disabled = false;
 applyQuantityEnabled(null); // the parked quantity of a free-text sale
 stockCancel.hidden = true;
-stockNegativeConfirm.hidden = true;
 negativeConfirm.hidden = true;
+stockDayForm.hidden = true;
+dayNegativeConfirm.hidden = true;
+stockViewFixed.checked = true; // the fixed stand is the default daily view
+stockViewMobile.checked = false;
+stockDayCaption.textContent = dayCaption(stockDate.value, stockDayStand());
+stockDayLabel.textContent = 'Cantidad cargada';
+stockDayHelp.textContent = 'Es lo que llevás al empezar el día y el puesto. Las ventas no lo cambian.';
 saveFeedback.dataset.success = 'false';
 reading(false);
 loadSales();

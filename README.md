@@ -224,6 +224,69 @@ daily sale opt-ins. Migrations are applied in version order (0001 → 0002 →
 0003) and are additive: no historical v1 or v2 rows are reset, backfilled or
 destructively changed.
 
+## Daily stock UI (T3 — `public/`)
+
+The catalogue below the daily view is name/price/actions only: the legacy
+global product stock stays internal for the legacy sale channel and the
+product/archive CAS (creation sends `stock: 0`, edits re-send the observed
+stock unchanged), and it is never editable, displayed or treated as the
+daily authority.
+The Stock panel now opens with the **daily stock view** and keeps the
+catalogue below it:
+
+- **Day and stand.** A date picker (`#stock-date`) and a radio view control
+  (`#stock-view-fixed` / `#stock-view-mobile`, fieldset “Puesto”) choose the
+  day and the stand; the table caption always shows the selected date and
+  stand. One `GET /api/stock-days?date=…` read carries BOTH stands, so
+  switching the view never reads again; changing the date reads the chosen
+  day once, clears the other day's rows and ignores stale in-flight answers.
+- **Figures.** Each active product row shows the approved
+  “Cantidad cargada · Vendido · Disponible” figures for that date and stand.
+  An unconfigured day is an explicit zero. Rows for later-archived products
+  stay visible as read-only history; the catalogue join decides the archive
+  flag, and until the catalogue loads the day rows stay plain and the server
+  still refuses an archived edit.
+- **Load edits (CAS).** “Modificar carga” opens the day edit form and edits
+  the INITIAL load of that date and stand (`action: "load"` with the
+  observed `prevInitial`); “Agregar unidades” adds units during the day
+  (`action: "replenish"` sending the NEW cumulative total = observed
+  replenished + units, with the observed value as `prevReplenished`). The
+  observed row is the only CAS source, so nothing is ever overwritten by a
+  lost race: a stale snapshot answers `409 LOAD_CONFLICT` with the day
+  untouched, and a refused edit keeps the draft. Each acknowledged load,
+  replenish or copy refreshes the shown figures with exactly one silent
+  read; a refused one triggers no read.
+- **Optional copy (S3).** “Copiar carga del día anterior” sends one
+  `POST /api/stock-days` with `action: "copy"` and ONLY the stock date and
+  the stock-view stand (never item lists, sale counts or balances). A
+  previous day without load answers `applied: 0` (“El día anterior no tiene
+  carga para copiar.”); copying onto a day that already has its own load
+  answers `409 DAY_ALREADY_LOADED` and the UI says nothing was overwritten.
+  There is no automatic carryover and no destructive reset anywhere.
+- **Negative availability.** A load that would push the visible availability
+  below the sold figure answers `409 INSUFFICIENT_STOCK` (the message
+  carries the daily `stock=`/`solicitado=` numbers) and shows the in-app
+  confirm “Aplicar igual y permitir disponibilidad negativa”, which retries
+  the SAME payload with `allowNegative: true`; any later edit voids the
+  confirm. Archived-product refusals (`409 PRODUCT_ARCHIVED`) and CAS
+  losses are shown explicitly.
+- **Daily sales opt-in.** Every new sale from the sale form sends
+  `dailyStock: true` plus the selected stand: it consumes that date/stand's
+  availability (never the global stock), so an unloaded day reports the
+  daily shortage and the existing explicit confirm flow retries the same
+  `requestId` with `allowNegative: true`. Legacy historical rows keep the
+  legacy channel: `saleFields` preserves `dailyStock` when the stored row
+  carries it and never adds it to an untagged row, so edits/deletes of a
+  daily row keep the daily channel and a legacy row never gains the tag.
+- **Contextual availability.** Product suggestions show availability for the
+  SALE date + SALE stand (engaging the product field or changing the sale
+  date with the list open is the only trigger; both stands come from one
+  cached read, so changing the stand never re-reads). The global catalogue
+  stock is never displayed as the daily authority. An acknowledged daily
+  mutation drops that date's cache entry so the next availability read is
+  fresh; the stock panel always re-reads when shown. No polling, no auto
+  resubmits, and view/date switches never overwrite the sale draft.
+
 ## UI contract (T4 — `public/`)
 
 - **Identification.** The business heading is `pochoclos-1`. There is no
@@ -247,14 +310,17 @@ destructively changed.
   focus to the chosen panel; Escape closes and returns focus to the toggle.
   The menu only exists for a proven business session.
 - **Stock panel.** Opens with exactly one visible `GET /api/products` (list of
-  ALL products, archived ones flagged and read-only). Create/Edit uses the
-  exact T3 product contract above (`previous: {id,name,priceCents,stock}` on
-  PUT, `previous: {stock}` on archive DELETE, archived rows never editable);
-  archive is an in-app two-step confirm (¿Archivar? → ¡Sí, archivar!) and
-  notices are honest (guardado / modificado / archivado / 404 ya existe).
-  A product PUT refused with `409 INSUFFICIENT_STOCK` shows an explicit
-  in-app confirm that resends the SAME draft with `allowNegative:true`; any
-  later edit voids the confirm.
+  ALL products, archived ones flagged and read-only). The catalogue shows
+  name, price and actions only: the legacy global units are internal
+  compatibility data, never displayed or edited (creation sends the legacy
+  `stock: 0`; a name/price edit re-sends the observed stock untouched, and
+  the archive DELETE keeps its observed `previous: {stock}` CAS). Create/Edit
+  keeps the exact T3 product contract above (`previous:
+  {id,name,priceCents,stock}` on PUT, archived rows never editable); archive
+  is an in-app two-step confirm (¿Archivar? → ¡Sí, archivar!) and notices are
+  honest (guardado / modificado / archivado / 404 ya existe). No
+  negative-global-stock edit UI exists, so the UI never sends
+  `allowNegative` for a product.
 - **Sale product link.** Typing in the product field streams suggestions from
   the cached active products (never archived ones; no technical language).
   Choosing a suggestion sets `productId`, parks quantity at its default 1,

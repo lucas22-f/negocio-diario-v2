@@ -82,6 +82,10 @@ function screen({ storage = new Map([['pochoclos-v2:stand', 'fixed']]) } = {}) {
     elements.get('stock-form').querySelectorAll = () => formInputsOf('stock-form');
     elements.get('stock-form').reportValidity = () => true;
   }
+  if (elements.get('stock-day-form')) {
+    elements.get('stock-day-form').querySelectorAll = () => formInputsOf('stock-day-form');
+    elements.get('stock-day-form').reportValidity = () => true;
+  }
   const makeTableBody = () => {
     const body = element();
     body.children = [];
@@ -97,6 +101,8 @@ function screen({ storage = new Map([['pochoclos-v2:stand', 'fixed']]) } = {}) {
   elements.set('sales', rows);
   const productRows = makeTableBody();
   elements.set('products', productRows);
+  const stockDayRows = makeTableBody();
+  elements.set('stock-rows', stockDayRows);
   const context = {
     document, window, AbortController, encodeURIComponent, console,
     localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, String(value)) },
@@ -112,7 +118,8 @@ function screen({ storage = new Map([['pochoclos-v2:stand', 'fixed']]) } = {}) {
     setTimeout(fn, delay) { const id = ++nextTimer; timers.set(id, { at: now + delay, fn }); return id; },
     clearTimeout(id) { timers.delete(id); },
     fetch(url, options = {}) {
-      assert.match(url, /^\/api\/(?:sales(?:\?|$)|session$|products$)/, 'mock is the only network destination');
+      // T3 adds /api/stock-days as the daily stock's only other destination.
+      assert.match(url, /^\/api\/(?:sales(?:\?|$)|session$|products$|stock-days(?:\?|$))/, 'mock is the only network destination');
       const method = options.method || 'GET';
       if (method === 'GET') maxReads = Math.max(maxReads, ++activeReads);
       return new Promise((resolve, reject) => {
@@ -333,7 +340,7 @@ test('a failed save triggers no GET, ever; the list waits for the next confirmed
   const payload = {
     requestId: '00000000-0000-4000-8000-000000000001', date: '2026-11-02',
     product: 'Borrador sin guardar', payment: 'transferencia', amount: '1500,10',
-    productId: null, quantity: 1, stand: 'fixed',
+    productId: null, quantity: 1, stand: 'fixed', dailyStock: true,
   };
   app.el('sale-form').emit('submit'); await flush();
   app.posts()[0].reject(new Error('Respuesta perdida')); await flush();
@@ -425,7 +432,7 @@ test('an uncertain POST keeps draft and requestId; a failed POST never reads; re
   const payload = JSON.parse(app.posts()[0].options.body);
   assert.deepEqual(payload, {
     requestId: payload.requestId, date: '2026-11-02', product: 'Borrador sin guardar', payment: 'transferencia', amount: '1500,10',
-    productId: null, quantity: 1, stand: 'fixed',
+    productId: null, quantity: 1, stand: 'fixed', dailyStock: true,
   });
   app.posts()[0].reject(new Error('Respuesta perdida')); await flush();
   assert.equal(app.el('save').getAttribute('aria-busy'), 'false');
@@ -912,19 +919,18 @@ test('the stock screen lists every product when opened, then creates and modifie
   assert.equal(rows.length, 2);
   assert.equal(rows[0].cells[0].textContent, 'Bolsa');
   assert.equal(rows[0].cells[1].textContent, '$ 12,50');
-  assert.equal(rows[0].cells[2].textContent, '10');
+  assert.equal(rows[0].cells[2].className, 'actions', 'name, price and actions only: the global units are not displayed');
   assert.equal(rowActions(app, 'products', 0).buttons.filter(t => t === 'destructive').length, 1);
   assert.equal(rows[1].cells[0].textContent, 'Recibo viejo · Archivado', 'the archived flag is business-visible');
   assert.match(rows[1].cells[0].textContent, /Recibo viejo/);
   assert.equal(rows[1].cells[1].textContent, '—', 'no price stays empty');
   assert.equal(rowActions(app, 'products', 1).buttons.length, 0, 'an archived product is read-only');
 
-  // Create.
+  // Create (the legacy global stock starts at 0; there is no units control).
   app.el('stock-name').value = 'Caramelos';
   app.el('stock-price').value = '8,50';
-  app.el('stock-stock').value = '4';
   app.el('stock-form').emit('submit'); await flush();
-  assert.deepEqual(JSON.parse(app.productPosts()[0].options.body), { name: 'Caramelos', price: '8,50', stock: 4 });
+  assert.deepEqual(JSON.parse(app.productPosts()[0].options.body), { name: 'Caramelos', price: '8,50', stock: 0 });
   assert.equal(app.el('stock-status').textContent, 'Guardando…');
   await app.reply(app.productPosts()[0], { storage: 'supabase', product: product('Caramelos', 850, 4, {}, '21111111-1111-4111-8111-333333333333') }, 201);
   assert.equal(app.el('stock-status').textContent, 'Producto guardado.');
@@ -932,7 +938,6 @@ test('the stock screen lists every product when opened, then creates and modifie
   assert.equal(app.el('stock-cancel').hidden, true);
   assert.equal(app.el('stock-name').value, '', 'a created product clears the form');
   assert.equal(app.el('stock-price').value, '');
-  assert.equal(app.el('stock-stock').value, '0');
   assert.equal(app.productGets().length, 2, 'the confirmed create refreshes the shown list exactly once');
   await app.reply(app.productGets()[1], catalogue(
     product('Bolsa', 1250, 10, {}, '21111111-1111-4111-8111-111111111111'),
@@ -942,23 +947,21 @@ test('the stock screen lists every product when opened, then creates and modifie
   await app.tick(60000);
   assert.equal(app.productGets().length, 2, 'no polling ever re-reads the stock list');
 
-  // Modify with the observed previous row (full CAS entries).
+  // Modify with the observed previous row (full CAS entries): the observed
+  // global stock travels unchanged, never edited from the UI.
   const edit = rowActions(app, 'products', 0).children.find(button => button.getAttribute('aria-label')?.startsWith('Modificar '));
   edit.emit('click');
   assert.equal(app.document.activeElement, app.el('stock-name'), 'editing a product focuses its name');
   assert.equal(app.el('stock-name').value, 'Bolsa');
   assert.equal(app.el('stock-price').value, '12,50');
-  assert.equal(app.el('stock-stock').value, '10');
-  assert.equal(app.el('stock-stock').disabled, false);
-  app.el('stock-stock').value = '-2';
   app.el('stock-form').emit('submit'); await flush();
   const put = app.productPuts()[0];
   assert.deepEqual(JSON.parse(put.options.body), {
     id: '21111111-1111-4111-8111-111111111111',
     previous: { id: '21111111-1111-4111-8111-111111111111', name: 'Bolsa', priceCents: 1250, stock: 10 },
-    name: 'Bolsa', price: '12,50', stock: -2,
+    name: 'Bolsa', price: '12,50', stock: 10,
   });
-  await app.reply(put, { storage: 'supabase', product: product('Bolsa', 1250, -2) }, 200);
+  await app.reply(put, { storage: 'supabase', product: product('Bolsa', 1250, 10) }, 200);
   assert.equal(app.el('stock-status').textContent, 'Producto modificado.');
   // Like an edit in the sales ledger, the form returns to the pre-edit draft.
   assert.equal(app.el('stock-name').value, '');
@@ -966,39 +969,26 @@ test('the stock screen lists every product when opened, then creates and modifie
   assert.equal(app.el('stock-cancel').hidden, true);
 });
 
-test('a negative stock change is a deliberate confirmation: first the 409, then the explicit allowNegative put', async () => {
+test('the catalogue never edits or displays the global stock: a name edit keeps the observed stock and no allowance exists', async () => {
   const app = screen();
   await app.reply(app.reads()[0], ledger());
   openStock(app); await flush();
   await app.reply(app.productGets()[0], catalogue(product('Bolsa', 1250, 3, {}, '21111111-1111-4111-8111-111111111111')));
+  assert.equal(app.el('stock-stock'), null, 'the global units input is gone from the catalogue UI');
+  assert.equal(app.el('stock-negative-confirm'), null, 'no negative-global-stock edit UI exists');
   const edit = rowActions(app, 'products', 0).children.find(button => button.getAttribute('aria-label')?.startsWith('Modificar '));
   edit.emit('click');
-  app.el('stock-stock').value = '-2';
+  app.el('stock-name').value = 'Bolsa doble';
   app.el('stock-form').emit('submit'); await flush();
-  const refused = app.productPuts()[0];
-  await app.reply(refused, {
-    error: { code: 'INSUFFICIENT_STOCK', message: 'STOCK_INSUFICIENTE: stock=3, solicitado=5' },
-  }, 409);
-  assert.equal(app.el('stock-negative-confirm').hidden, false, 'the explicit confirm appears in the app');
-  assert.match(app.el('stock-status').textContent, /stock=3, solicitado=5/, 'the server numbers reach the notice');
-  assert.equal(app.el('stock-name').value, 'Bolsa', 'the draft stays unchanged behind the confirm');
-  assert.equal(app.el('stock-stock').value, '-2');
-  app.el('stock-negative-confirm').emit('click'); await flush();
-  const confirmed = app.productPuts()[1];
-  const body = JSON.parse(confirmed.options.body);
-  assert.equal(body.id, JSON.parse(refused.options.body).id, 'the same product row is retried');
-  assert.equal(body.allowNegative, true, 'the explicit acknowledgement travels in the retry');
-  assert.deepEqual(body.previous, JSON.parse(refused.options.body).previous, 'same content, same observed snapshot');
-  await app.reply(confirmed, { storage: 'supabase', product: product('Bolsa', 1250, -2) }, 200);
-  assert.equal(app.el('stock-negative-confirm').hidden, true, 'a confirmed outcome clears the pending confirm');
-  // A later edit is a fresh decision: the allowance is never sticky.
-  const editAgain = rowActions(app, 'products', 0).children.find(button => button.getAttribute('aria-label')?.startsWith('Modificar '));
-  editAgain.emit('click');
-  app.el('stock-stock').value = '-2';
-  app.el('stock-form').emit('submit'); await flush();
-  const later = JSON.parse(app.productPuts()[2].options.body);
-  assert.equal(later.allowNegative, undefined, 'a later edit is a fresh decision, not sticky allowance');
-  assert.equal(later.stock, -2);
+  const put = app.productPuts()[0];
+  const body = JSON.parse(put.options.body);
+  assert.equal(body.stock, 3, 'the observed legacy stock travels unchanged for CAS');
+  assert.deepEqual(body.previous, { id: '21111111-1111-4111-8111-111111111111', name: 'Bolsa', priceCents: 1250, stock: 3 });
+  assert.equal(body.allowNegative, undefined, 'a product edit never claims the negative allowance');
+  await app.reply(put, { storage: 'supabase', product: product('Bolsa doble', 1250, 3, {}, '21111111-1111-4111-8111-111111111111') }, 200);
+  assert.equal(app.el('stock-status').textContent, 'Producto modificado.');
+  await app.tick(60000);
+  assert.equal(app.productGets().length, 2, 'no polling follows the acknowledged product edit');
 });
 
 test('the stock edit refusal leaves the stale-name duplicate to the server: a lost race is an honest error and nothing else', async () => {
@@ -1125,8 +1115,8 @@ test('typing over a selected product clears the link, so a free-text sale always
   const payload = JSON.parse(app.salePosts()[0].options.body);
   assert.deepEqual(payload, {
     requestId: payload.requestId, date: '2026-11-02', product: 'Borrador sin guardar', payment: 'transferencia',
-    amount: '1500,10', productId: null, quantity: 1, stand: 'fixed',
-  }, 'a free-text sale relinked nothing despite a matching product name');
+    amount: '1500,10', productId: null, quantity: 1, stand: 'fixed', dailyStock: true,
+  }, 'a free-text sale relinked nothing despite a matching product name and opts into the daily channel');
 });
 
 test('editing a linked sale keeps the historical snapshot: the previous row keeps id and quantity and typing never relinks by name', async () => {

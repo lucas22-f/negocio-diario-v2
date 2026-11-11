@@ -52,8 +52,19 @@ p { margin: 0; }
 .product-listbox .option-meta { color: var(--muted); font-size: var(--text-small); font-weight: 400; }
 .negative-confirm { color: var(--error); border-color: var(--error); background: var(--sheet); }
 .negative-confirm:hover:not(:disabled) { color: var(--error); border-color: var(--error); background: var(--sheet); }
-.stock-units { font-variant-numeric: tabular-nums; font-weight: 600; }
 .archived-row td { color: var(--muted); }
+/* The daily stock view reuses the same quiet table language; the three
+   approved figures (Cantidad cargada · Vendido · Disponible) are numeric. */
+.stock h3 { margin: 28px 0 16px; font-size: var(--text-body); font-weight: 650; letter-spacing: -.01em; }
+#stock-day-status { margin-bottom: 16px; font-size: var(--text-small); overflow-wrap: anywhere; }
+#stock-day-status:empty { display: none; }
+#stock-day-table th:first-child { width: 34%; }
+#stock-day-table th:nth-child(2), #stock-day-table th:nth-child(3), #stock-day-table th:nth-child(4) { width: 15%; }
+#stock-day-table td.day-figure { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+#stock-day-table td.actions button { min-height: 48px; padding: 6px 12px; font-size: var(--text-small); font-weight: 500; color: var(--muted); border-color: var(--line); background: var(--sheet); }
+#stock-day-table td.actions button:hover:not(:disabled) { color: var(--ink); border-color: var(--ink); background: var(--sheet); }
+#stock-day-table td.actions .icon-button { display: inline-flex; align-items: center; justify-content: center; width: 48px; padding: 0; vertical-align: middle; }
+#stock-day-table td.actions .icon-button + .icon-button { margin-left: 4px; }
 /* 1120px inner frame = 400px entry + 24px gap + 696px ledger. */
 .workspace { display: grid; grid-template-columns: 400px minmax(0, 1fr); gap: var(--gap); align-items: start; }
 .entry, .ledger { min-width: 0; padding: var(--panel-pad); border: 1px solid var(--line); border-radius: var(--radius-panel); background: var(--sheet); }
@@ -203,6 +214,19 @@ footer { max-width: 76ch; margin-top: 20px; }
   #daily-total th { grid-column: 1; grid-row: 1; }
   #daily-total td.money { grid-column: 2; grid-row: 1; }
   #daily-total td.actions { display: none; }
+}
+@media (max-width: 560px) {
+  /* Without the table header, the three figures keep their meaning. */
+  #stock-day-table tr { grid-template-columns: minmax(0, 1fr) auto auto auto; }
+  #stock-day-table td.product { grid-column: 1 / -1; grid-row: 1; }
+  #stock-day-table td.day-figure { grid-column: auto; grid-row: 2; }
+  #stock-day-table td.day-figure::before {
+    content: attr(data-label);
+    display: block;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 400;
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   button:active:not(:disabled) { transform: none; }
