@@ -153,7 +153,7 @@ export async function runProbe(db) {
 // unhandled PostgREST database error.
 // ---------------------------------------------------------------------------
 
-const RPC_PARAMS = {
+export const RPC_PARAMS = {
   v2_create_sale: ['p_sale_id', 'p_date', 'p_product', 'p_payment', 'p_amount_cents', 'p_product_id', 'p_quantity', 'p_allow_negative'],
   v2_edit_sale: ['p_sale_id', 'p_prev_date', 'p_prev_product', 'p_prev_payment', 'p_prev_amount_cents', 'p_prev_product_id', 'p_prev_quantity', 'p_date', 'p_product', 'p_payment', 'p_amount_cents', 'p_product_id', 'p_quantity', 'p_allow_negative'],
   v2_delete_sale: ['p_sale_id', 'p_prev_date', 'p_prev_product', 'p_prev_payment', 'p_prev_amount_cents', 'p_prev_product_id', 'p_prev_quantity'],
@@ -165,6 +165,15 @@ const RPC_PARAMS = {
 RPC_PARAMS.v2_create_sale_at_stand = [...RPC_PARAMS.v2_create_sale, 'p_stand'];
 RPC_PARAMS.v2_edit_sale_at_stand = ['p_sale', 'p_previous'];
 RPC_PARAMS.v2_delete_sale_at_stand = ['p_previous'];
+// Daily stock contracts (T1 of odd/tasks/daily-stand-stock.md). Additive:
+// existing entries and createRestStockFetch behavior are unchanged.
+RPC_PARAMS.v2_read_daily_stock = ['p_date'];
+RPC_PARAMS.v2_load_daily_stock = ['p_date', 'p_stand', 'p_items', 'p_allow_negative'];
+RPC_PARAMS.v2_replenish_daily_stock = ['p_date', 'p_stand', 'p_items', 'p_allow_negative'];
+RPC_PARAMS.v2_copy_daily_stock = ['p_date', 'p_stand'];
+RPC_PARAMS.v2_create_daily_sale = [...RPC_PARAMS.v2_create_sale, 'p_stand'];
+RPC_PARAMS.v2_edit_daily_sale = ['p_sale', 'p_previous'];
+RPC_PARAMS.v2_delete_daily_sale = ['p_previous'];
 
 const stripEq = value => (value === null ? null : value.replace(/^eq\./, ''));
 
