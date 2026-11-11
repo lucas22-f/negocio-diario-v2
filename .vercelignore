@@ -13,6 +13,11 @@
 .impeccable/
 .taste-skill/
 
+# Local verification payloads, recovery metadata and worker scratch.
+tmp/
+cache/
+home/
+
 # Non-runtime project directories (migrations applied; docs/tests/tooling).
 design/
 odd/
